@@ -14,7 +14,6 @@ import kotlinx.coroutines.selects.*
 import kotlinx.coroutines.sync.*
 import kotlin.coroutines.*
 import kotlin.math.*
-import kotlin.native.concurrent.*
 
 /**
 [CancellableQueueSynchronizer] (CQS) is an abstraction for implementing _fair_ synchronization and communication primitives.
@@ -193,6 +192,7 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
         return null
     }
 
+    @OptIn(InternalCoroutinesApi::class)
     @Suppress("UNCHECKED_CAST", "INFERRED_TYPE_VARIABLE_INTO_POSSIBLE_EMPTY_INTERSECTION")
     internal fun suspend(waiter: @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Waiter): Boolean {
         // Increment `suspendIdx` and find the segment
@@ -283,6 +283,7 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
      * moves [resumeIdx] to the first possibly non-cancelled cell, i.e.,
      * to the first segment id multiplied by [SEGMENT_SIZE].
      */
+    @OptIn(InternalCoroutinesApi::class)
     @Suppress("UNCHECKED_CAST", "INFERRED_TYPE_VARIABLE_INTO_POSSIBLE_EMPTY_INTERSECTION")
     private fun tryResumeImpl(value: T, adjustResumeIdx: Boolean): Int {
         // Check that `adjustResumeIdx` is `false` in the simple cancellation mode.
@@ -650,21 +651,13 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
  */
 private class WrappedContinuationValue(val cont: Continuation<*>)
 
-@SharedImmutable
 private val SEGMENT_SIZE = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") systemProp("kotlinx.coroutines.cqs.segmentSize", 16)
-@SharedImmutable
 private val MAX_SPIN_CYCLES = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") systemProp("kotlinx.coroutines.cqs.maxSpinCycles", 100)
-@SharedImmutable
 private val TAKEN = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Symbol("TAKEN")
-@SharedImmutable
 private val BROKEN = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Symbol("BROKEN")
-@SharedImmutable
 private val CANCELLING = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Symbol("CANCELLING")
-@SharedImmutable
 private val CANCELLED = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Symbol("CANCELLED")
-@SharedImmutable
 private val REFUSE = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Symbol("REFUSE")
-@SharedImmutable
 private val RESUMED = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Symbol("RESUMED")
 
 private const val TRY_RESUME_SUCCESS = 0
