@@ -6,42 +6,41 @@ package kotlinx.coroutines
 import org.jetbrains.kotlinx.lincheck.*
 import org.jetbrains.kotlinx.lincheck.strategy.managed.modelchecking.*
 import org.jetbrains.kotlinx.lincheck.strategy.stress.*
-import org.jetbrains.kotlinx.lincheck.verifier.*
-import org.junit.*
-import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.*
 
-abstract class AbstractLincheckTest : VerifierState() {
-    open fun <O: Options<O, *>> O.customize(isStressTest: Boolean): O = this
-    open fun ModelCheckingOptions.customize(isStressTest: Boolean): ModelCheckingOptions = this
-    open fun StressOptions.customize(isStressTest: Boolean): StressOptions = this
+abstract class AbstractLincheckTest {
+    open fun <O : Options<O, *>> O.customize(): O = this
+    open fun ModelCheckingOptions.customize(): ModelCheckingOptions = this
+    open fun StressOptions.customize(): StressOptions = this
 
     @Test
     fun modelCheckingTest() = ModelCheckingOptions()
-        .iterations(if (isStressTest) 200 else 20)
-        .invocationsPerIteration(if (isStressTest) 10_000 else 1_000)
+        .invocationsPerIteration(10_000)
         .commonConfiguration()
-        .customize(isStressTest)
+        .customize()
         .check(this::class)
 
     @Test
     fun stressTest() = StressOptions()
-        .iterations(if (isStressTest) 200 else 20)
-        .invocationsPerIteration(if (isStressTest) 10_000 else 1_000)
+        .invocationsPerIteration(10_000)
         .commonConfiguration()
-        .customize(isStressTest)
+        .customize()
         .check(this::class)
 
     private fun <O : Options<O, *>> O.commonConfiguration(): O = this
-        .actorsBefore(if (isStressTest) 3 else 1)
-        // All the bugs we have discovered so far
-        // were reproducible on at most 3 threads
+        .iterations(100)
+        .actorsBefore(2)
         .threads(3)
-        // 3 operations per thread is sufficient,
-        // while increasing this number declines
-        // the model checking coverage.
-        .actorsPerThread(if (isStressTest) 3 else 2)
-        .actorsAfter(if (isStressTest) 3 else 0)
-        .customize(isStressTest)
+        .actorsPerThread(3)
+        .actorsAfter(2)
+        .customize()
+}
 
-    override fun extractState(): Any = error("Not implemented")
+@OptIn(InternalCoroutinesApi::class)
+fun <T> CancellableContinuation<T>.tryResume0(value: T, onCancellation: (Throwable?) -> Unit): Boolean {
+    tryResume(value, null, onCancellation).let {
+        if (it == null) return false
+        completeResume(it)
+        return true
+    }
 }

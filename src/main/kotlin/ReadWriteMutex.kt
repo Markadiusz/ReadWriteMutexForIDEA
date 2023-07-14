@@ -2,17 +2,18 @@
  * Copyright 2016-2023 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license.
  */
 
-package kotlinx.coroutines.sync
+@file:Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER", "CANNOT_OVERRIDE_INVISIBLE_MEMBER")
+
+package rwmutex
 
 import kotlinx.atomicfu.*
 import kotlinx.coroutines.*
-import kotlinx.coroutines.internal.*
-import kotlinx.coroutines.internal.CancellableQueueSynchronizer.CancellationMode.*
-import kotlinx.coroutines.internal.CancellableQueueSynchronizer.ResumeMode.*
 import kotlinx.coroutines.selects.*
-import kotlinx.coroutines.sync.ReadWriteMutexImpl.WriteUnlockPolicy.*
+import kotlinx.coroutines.sync.*
+import rwmutex.CancellableQueueSynchronizer.CancellationMode.*
+import rwmutex.CancellableQueueSynchronizer.ResumeMode.*
+import rwmutex.ReadWriteMutexImpl.WriteUnlockPolicy.*
 import kotlin.contracts.*
-import kotlin.js.*
 
 /**
  * This readers-writer mutex maintains a logical pair of locks, one for read-only
@@ -47,7 +48,6 @@ import kotlin.js.*
  * it can be simpler and cheaper to use the plain [Mutex]. Therefore, it is highly recommended
  * to measure the performance difference to make the right choice.
  */
-@ExperimentalCoroutinesApi
 public interface ReadWriteMutex {
     /**
      * // TODO: how to reference `val write: Mutex` instead of the extension function?
@@ -70,7 +70,6 @@ public interface ReadWriteMutex {
      * is always released at the end of the critical section, and [readUnlock()][readUnlock] is never invoked
      * before a successful [readLock()][readLock].
      */
-    @ExperimentalCoroutinesApi
     public suspend fun readLock()
 
     /**
@@ -81,7 +80,6 @@ public interface ReadWriteMutex {
      * is always released at the end of the critical section, and [readUnlock()][readUnlock] is never invoked
      * before a successful [readLock()][readLock].
      */
-    @ExperimentalCoroutinesApi
     public fun readUnlock()
 
     /**
@@ -105,7 +103,6 @@ public interface ReadWriteMutex {
      * is always released at the end of the critical section, and [write.unlock()][Mutex.unlock] is never invoked
      * before a successful [write.lock()][Mutex.lock].
      */
-    @ExperimentalCoroutinesApi
     public val write: Mutex
 }
 
@@ -191,6 +188,7 @@ public suspend inline fun <T> ReadWriteMutex.write(action: () -> T): T =
 internal class ReadWriteMutexImpl : ReadWriteMutex, Mutex {
     // The number of coroutines waiting for a reader lock in `cqsReaders`.
     private val waitingReaders = atomic(0)
+
     // This state field contains several counters and is always updated atomically by `CAS`:
     // - `AR` (active readers) is a 30-bit counter which represents the number
     //                         of coroutines holding a read lock;
@@ -216,6 +214,7 @@ internal class ReadWriteMutexImpl : ReadWriteMutex, Mutex {
         if (owner != null) error("ReadWriteMutex.write does not support owners")
         writeLock()
     }
+
     @Suppress("OVERRIDE_DEPRECATION")
     override val onLock: SelectClause2<Any?, Mutex> get() = error("ReadWriteMutex.write does not support `onLock`")
     override fun holdsLock(owner: Any) = error("ReadWriteMutex.write does not support owners")
@@ -265,7 +264,7 @@ internal class ReadWriteMutexImpl : ReadWriteMutex, Mutex {
             if (s.wla || s.ww > 0) {
                 // The number of waiting readers was incremented
                 // correctly, wait for a reader lock in `cqsReaders`.
-                @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") suspendCancellableCoroutineReusable<Unit> { cont ->
+                suspendCancellableCoroutineReusable<Unit> { cont ->
                     cqsReaders.suspend(cont as Waiter)
                 }
                 return
@@ -285,7 +284,7 @@ internal class ReadWriteMutexImpl : ReadWriteMutex, Mutex {
                     // it is guaranteed that the lock will be provided
                     // when this concurrent `write.unlock()` completes.
                     if (wr == 0) {
-                        @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") suspendCancellableCoroutineReusable<Unit> { cont ->
+                        suspendCancellableCoroutineReusable<Unit> { cont ->
                             cqsReaders.suspend(cont as Waiter)
                         }
                         return
@@ -391,14 +390,14 @@ internal class ReadWriteMutexImpl : ReadWriteMutex, Mutex {
             // which is releasing readers now (the RWR flag is set), or an active reader (AR >= 0)?
             if (!s.wla && !s.rwr && s.ar == 0) {
                 // Try to acquire the writer lock, re-try the operation if this CAS fails.
-                @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") assert { s.ww == 0 }
+                assert { s.ww == 0 }
                 if (state.compareAndSet(s, state(0, true, 0, false)))
                     return
             } else {
                 // The lock cannot be acquired immediately, and this operation has to suspend.
                 // Try to increment the number of waiting writers and suspend in `cqsWriters`.
                 if (state.compareAndSet(s, state(s.ar, s.wla, s.ww + 1, s.rwr))) {
-                    @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") suspendCancellableCoroutineReusable<Unit> { cont ->
+                    suspendCancellableCoroutineReusable<Unit> { cont ->
                         cqsWriters.suspend(cont as Waiter)
                     }
                     return
@@ -436,7 +435,7 @@ internal class ReadWriteMutexImpl : ReadWriteMutex, Mutex {
             val s = state.value
             check(s.wla) { "Invalid `writeUnlock` invocation: the writer lock is not acquired. $INVALID_UNLOCK_INVOCATION_TIP" }
             check(!s.rwr)
-            @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") assert { s.ar == 0 }
+            assert { s.ar == 0 }
             // Should we resume the next writer?
             curUnlockPolicy = !curUnlockPolicy // change the unlock policy for the `ROUND_ROBIN` strategy
             val resumeWriter = (s.ww > 0) && (policy == PRIORITIZE_WRITERS || policy == ROUND_ROBIN && curUnlockPolicy)
@@ -468,7 +467,7 @@ internal class ReadWriteMutexImpl : ReadWriteMutex, Mutex {
         // and completes the readers resumption process. Note that
         // it also checks whether the next waiting writer should be
         // resumed on completion and performs this resumption if needed.
-        @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") assert { state.value.rwr }
+        assert { state.value.rwr }
         // At first, atomically replace the number of waiting
         // readers (to be resumed) with 0, retrieving the old value.
         val wr = waitingReaders.getAndSet(0)
@@ -478,7 +477,7 @@ internal class ReadWriteMutexImpl : ReadWriteMutex, Mutex {
         if (wr > 0) { // should we update the state?
             state.update { s ->
                 check(!s.wla) // the writer lock cannot be acquired now.
-                @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") assert { s.rwr } // the `RWR` flag should still be set.
+                assert { s.rwr } // the `RWR` flag should still be set.
                 state(s.ar + wr, false, s.ww, true)
             }
         }
@@ -574,11 +573,12 @@ internal class ReadWriteMutexImpl : ReadWriteMutex, Mutex {
     }
 
     // This state representation is used in Lincheck tests.
-    internal val stateRepresentation: String get() =
-        "<wr=${waitingReaders.value},ar=${state.value.ar}" +
-                ",wla=${state.value.wla},ww=${state.value.ww}" +
-                ",rwr=${state.value.rwr}" +
-                ",cqs_r={$cqsReaders},cqs_w={$cqsWriters}>"
+    internal val stateRepresentation: String
+        get() =
+            "<wr=${waitingReaders.value},ar=${state.value.ar}" +
+                    ",wla=${state.value.wla},ww=${state.value.ww}" +
+                    ",rwr=${state.value.rwr}" +
+                    ",cqs_r={$cqsReaders},cqs_w={$cqsWriters}>"
 
     internal enum class WriteUnlockPolicy { PRIORITIZE_READERS, PRIORITIZE_WRITERS, ROUND_ROBIN }
 }
@@ -587,7 +587,12 @@ internal class ReadWriteMutexImpl : ReadWriteMutex, Mutex {
  * Constructs a value for [ReadWriteMutexImpl.state] field.
  * The created state can be parsed via the extension functions below.
  */
-private fun state(activeReaders: Int, writeLockAcquired: Boolean, waitingWriters: Int, resumingWaitingReaders: Boolean): Long =
+private fun state(
+    activeReaders: Int,
+    writeLockAcquired: Boolean,
+    waitingWriters: Int,
+    resumingWaitingReaders: Boolean
+): Long =
     (if (writeLockAcquired) WLA_BIT else 0) +
             (if (resumingWaitingReaders) RWR_BIT else 0) +
             activeReaders * AR_MULTIPLIER +
@@ -595,10 +600,13 @@ private fun state(activeReaders: Int, writeLockAcquired: Boolean, waitingWriters
 
 // Equals `true` if the `WLA` flag is set in this state.
 private val Long.wla: Boolean get() = this or WLA_BIT == this
+
 // Equals `true` if the `RWR` flag is set in this state.
 private val Long.rwr: Boolean get() = this or RWR_BIT == this
+
 // The number of waiting writers specified in this state.
 private val Long.ww: Int get() = ((this % AR_MULTIPLIER) / WW_MULTIPLIER).toInt()
+
 // The number of active readers specified in this state.
 private val Long.ar: Int get() = (this / AR_MULTIPLIER).toInt()
 
@@ -607,6 +615,7 @@ private const val RWR_BIT = 1L shl 1
 private const val WW_MULTIPLIER = 1L shl 2
 private const val AR_MULTIPLIER = 1L shl 33
 
-private const val INVALID_UNLOCK_INVOCATION_TIP = "This can be caused by releasing the lock without acquiring it at first, " +
-        "or incorrectly putting the acquisition inside the \"try\" block of the \"try-finally\" section that safely releases " +
-        "the lock in the \"finally\" block - the acquisition should be performed right before this \"try\" block."
+private const val INVALID_UNLOCK_INVOCATION_TIP =
+    "This can be caused by releasing the lock without acquiring it at first, " +
+            "or incorrectly putting the acquisition inside the \"try\" block of the \"try-finally\" section that safely releases " +
+            "the lock in the \"finally\" block - the acquisition should be performed right before this \"try\" block."

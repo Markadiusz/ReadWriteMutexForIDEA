@@ -2,22 +2,20 @@
  * Copyright 2016-2023 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license.
  */
 
-@file:Suppress("unused", "MemberVisibilityCanBePrivate")
+@file:Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER", "CANNOT_OVERRIDE_INVISIBLE_MEMBER")
 
-package kotlinx.coroutines.lincheck
+package rwmutex
 
 import kotlinx.atomicfu.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.internal.*
-import kotlinx.coroutines.internal.CancellableQueueSynchronizer.CancellationMode.*
-import kotlinx.coroutines.internal.CancellableQueueSynchronizer.ResumeMode.*
-import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.lincheck.*
+import kotlinx.coroutines.sync.*
 import org.jetbrains.kotlinx.lincheck.*
 import org.jetbrains.kotlinx.lincheck.annotations.*
-import org.jetbrains.kotlinx.lincheck.annotations.Operation
 import org.jetbrains.kotlinx.lincheck.strategy.managed.modelchecking.*
-import org.jetbrains.kotlinx.lincheck.verifier.*
-import kotlin.collections.ArrayList
+import rwmutex.CancellableQueueSynchronizer.CancellationMode.*
+import rwmutex.CancellableQueueSynchronizer.ResumeMode.*
 import kotlin.coroutines.*
 import kotlin.reflect.*
 
@@ -51,7 +49,7 @@ internal class AsyncSemaphore(permits: Int) : CancellableQueueSynchronizer<Unit>
         if (p > 0) return
         // Suspend otherwise.
         suspendCancellableCoroutine<Unit> { cont ->
-            check(suspend(cont as @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Waiter)) { "Should not fail in ASYNC mode" }
+            check(suspend(cont as Waiter)) { "Should not fail in ASYNC mode" }
         }
     }
 
@@ -97,7 +95,7 @@ internal class AsyncSemaphoreSmart(permits: Int) : CancellableQueueSynchronizer<
         if (p > 0) return
         // Suspend otherwise.
         suspendCancellableCoroutine<Unit> { cont ->
-            check(suspend(cont as @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Waiter)) { "Should not fail in ASYNC mode" }
+            check(suspend(cont as Waiter)) { "Should not fail in ASYNC mode" }
         }
     }
 
@@ -153,7 +151,7 @@ internal class SyncSemaphoreSmart(permits: Int) : CancellableQueueSynchronizer<B
             if (p > 0) return
             // Try to suspend otherwise.
             val acquired = suspendCancellableCoroutine { cont ->
-                if (!suspend(cont as @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Waiter)) cont.resume(false)
+                if (!suspend(cont as Waiter)) cont.resume(false)
             }
             if (acquired) return
         }
@@ -163,7 +161,7 @@ internal class SyncSemaphoreSmart(permits: Int) : CancellableQueueSynchronizer<B
         // Try to decrement the number of available
         // permits if it is greater than zero.
         if (cur <= 0) return false
-        if (_availablePermits.compareAndSet(cur, cur -1)) return true
+        if (_availablePermits.compareAndSet(cur, cur - 1)) return true
     }
 
     override fun release() {
@@ -206,28 +204,36 @@ abstract class AsyncSemaphoreLincheckTestBase(
     @Operation(allowExtraSuspension = true, promptCancellation = false)
     suspend fun acquire() = s.acquire()
 
-    @Operation(handleExceptionsAsResult = [IllegalStateException::class])
+    @Operation
     fun release() = s.release()
 
-    override fun <O : Options<O, *>> O.customize(isStressTest: Boolean): O =
-        actorsBefore(0)
-            .sequentialSpecification(seqSpec.java)
+    override fun <O : Options<O, *>> O.customize(): O =
+        actorsBefore(0).sequentialSpecification(seqSpec.java)
 
-    override fun ModelCheckingOptions.customize(isStressTest: Boolean) =
+    override fun ModelCheckingOptions.customize() =
         checkObstructionFreedom()
 }
 
-class AsyncSemaphore1LincheckTest : AsyncSemaphoreLincheckTestBase(AsyncSemaphore(1), SemaphoreUnboundedSequential1::class)
-class AsyncSemaphore2LincheckTest : AsyncSemaphoreLincheckTestBase(AsyncSemaphore(2), SemaphoreUnboundedSequential2::class)
+class AsyncSemaphore1LincheckTest :
+    AsyncSemaphoreLincheckTestBase(AsyncSemaphore(1), SemaphoreUnboundedSequential1::class)
 
-class AsyncSemaphoreSmart1LincheckTest : AsyncSemaphoreLincheckTestBase(AsyncSemaphoreSmart(1), SemaphoreUnboundedSequential1::class)
-class AsyncSemaphoreSmart2LincheckTest : AsyncSemaphoreLincheckTestBase(AsyncSemaphoreSmart(2), SemaphoreUnboundedSequential2::class)
+class AsyncSemaphore2LincheckTest :
+    AsyncSemaphoreLincheckTestBase(AsyncSemaphore(2), SemaphoreUnboundedSequential2::class)
 
-class SyncSemaphoreSmart1LincheckTest : SemaphoreLincheckTestBase(SyncSemaphoreSmart(1), SemaphoreUnboundedSequential1::class) {
-    override fun ModelCheckingOptions.customize(isStressTest: Boolean) = checkObstructionFreedom(false)
+class AsyncSemaphoreSmart1LincheckTest :
+    AsyncSemaphoreLincheckTestBase(AsyncSemaphoreSmart(1), SemaphoreUnboundedSequential1::class)
+
+class AsyncSemaphoreSmart2LincheckTest :
+    AsyncSemaphoreLincheckTestBase(AsyncSemaphoreSmart(2), SemaphoreUnboundedSequential2::class)
+
+class SyncSemaphoreSmart1LincheckTest :
+    SemaphoreLincheckTestBase(SyncSemaphoreSmart(1), SemaphoreUnboundedSequential1::class) {
+    override fun ModelCheckingOptions.customize() = checkObstructionFreedom(false)
 }
-class SyncSemaphoreSmart2LincheckTest : SemaphoreLincheckTestBase(SyncSemaphoreSmart(2), SemaphoreUnboundedSequential2::class) {
-    override fun ModelCheckingOptions.customize(isStressTest: Boolean) = checkObstructionFreedom(false)
+
+class SyncSemaphoreSmart2LincheckTest :
+    SemaphoreLincheckTestBase(SyncSemaphoreSmart(2), SemaphoreUnboundedSequential2::class) {
+    override fun ModelCheckingOptions.customize() = checkObstructionFreedom(false)
 }
 
 
@@ -249,6 +255,7 @@ internal open class CountDownLatch(count: Int) : CancellableQueueSynchronizer<Un
     override val resumeMode get() = ASYNC
 
     private val count = atomic(count)
+
     // The number of suspended `await` invocations.
     // `DONE_MARK` should be set when the count reaches zero,
     // so the following suspension attempts will detect this change by
@@ -293,7 +300,7 @@ internal open class CountDownLatch(count: Int) : CancellableQueueSynchronizer<Un
         if (w and DONE_MARK != 0) return
         // The number of waiters is
         // successfully incremented, suspend.
-        suspendCancellableCoroutine<Unit> { suspend(it as @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Waiter) }
+        suspendCancellableCoroutine<Unit> { suspend(it as Waiter) }
     }
 
     /**
@@ -337,25 +344,31 @@ internal abstract class CountDownLatchLincheckTestBase(
     @Operation(promptCancellation = false)
     suspend fun await() = cdl.await()
 
-    override fun <O : Options<O, *>> O.customize(isStressTest: Boolean): O =
+    override fun <O : Options<O, *>> O.customize(): O =
         actorsBefore(0)
             .actorsAfter(0)
             .sequentialSpecification(seqSpec.java)
 
-    override fun ModelCheckingOptions.customize(isStressTest: Boolean) =
+    override fun ModelCheckingOptions.customize() =
         checkObstructionFreedom()
 }
 
 class CountDownLatchSequential1 : CountDownLatchSequential(1)
 class CountDownLatchSequential2 : CountDownLatchSequential(2)
 
-internal class CountDownLatch1LincheckTest : CountDownLatchLincheckTestBase(CountDownLatch(1), CountDownLatchSequential1::class)
-internal class CountDownLatch2LincheckTest : CountDownLatchLincheckTestBase(CountDownLatch(2), CountDownLatchSequential2::class)
+internal class CountDownLatch1LincheckTest :
+    CountDownLatchLincheckTestBase(CountDownLatch(1), CountDownLatchSequential1::class)
 
-internal class CountDownLatchSmart1LincheckTest : CountDownLatchLincheckTestBase(CountDownLatchSmart(1), CountDownLatchSequential1::class)
-internal class CountDownLatchSmart2LincheckTest : CountDownLatchLincheckTestBase(CountDownLatchSmart(2), CountDownLatchSequential2::class)
+internal class CountDownLatch2LincheckTest :
+    CountDownLatchLincheckTestBase(CountDownLatch(2), CountDownLatchSequential2::class)
 
-open class CountDownLatchSequential(initialCount: Int) : VerifierState() {
+internal class CountDownLatchSmart1LincheckTest :
+    CountDownLatchLincheckTestBase(CountDownLatchSmart(1), CountDownLatchSequential1::class)
+
+internal class CountDownLatchSmart2LincheckTest :
+    CountDownLatchLincheckTestBase(CountDownLatchSmart(2), CountDownLatchSequential2::class)
+
+open class CountDownLatchSequential(initialCount: Int) {
     private var count = initialCount
     private val waiters = ArrayList<CancellableContinuation<Unit>>()
 
@@ -374,8 +387,6 @@ open class CountDownLatchSequential(initialCount: Int) : VerifierState() {
     }
 
     fun remaining(): Int = count.coerceAtLeast(0)
-
-    override fun extractState() = remaining()
 }
 
 
@@ -427,7 +438,7 @@ internal class Barrier(private val parties: Int) : CancellableQueueSynchronizer<
         return when {
             // Should we suspend?
             a < parties -> {
-                @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") suspendCancellableCoroutineReusable<Unit> { cont -> suspend(cont as Waiter) }
+                suspendCancellableCoroutineReusable<Unit> { cont -> suspend(cont as Waiter) }
                 true
             }
             // Are we the last party?
@@ -461,13 +472,13 @@ abstract class BarrierLincheckTestBase(parties: Int, val seqSpec: KClass<*>) : A
     @Operation(cancellableOnSuspension = false)
     suspend fun arrive() = b.arrive()
 
-    override fun <O : Options<O, *>> O.customize(isStressTest: Boolean) =
+    override fun <O : Options<O, *>> O.customize() =
         actorsBefore(0)
             .actorsAfter(0)
             .threads(3)
             .sequentialSpecification(seqSpec.java)
 
-    override fun ModelCheckingOptions.customize(isStressTest: Boolean) =
+    override fun ModelCheckingOptions.customize() =
         checkObstructionFreedom()
 }
 
@@ -478,7 +489,7 @@ class Barrier2LincheckTest : BarrierLincheckTestBase(2, BarrierSequential2::clas
 class BarrierSequential3 : BarrierSequential(3)
 class Barrier3LincheckTest : BarrierLincheckTestBase(3, BarrierSequential3::class)
 
-open class BarrierSequential(parties: Int) : VerifierState() {
+open class BarrierSequential(parties: Int) {
     private var remaining = parties
     private val waiters = ArrayList<Continuation<Unit>>()
 
@@ -495,15 +506,15 @@ open class BarrierSequential(parties: Int) : VerifierState() {
                 }
                 true
             }
+
             r == 0 -> {
                 waiters.forEach { it.resume(Unit) }
                 true
             }
+
             else -> false
         }
     }
-
-    override fun extractState() = remaining > 0
 }
 
 
@@ -529,7 +540,7 @@ open class BarrierSequential(parties: Int) : VerifierState() {
  * that the stored elements are ordered (the one may consider them as bags),
  * these queue- and stack-based versions should be considered as pools with specific heuristics.
  */
-interface BlockingPool<T: Any> {
+interface BlockingPool<T : Any> {
     /**
      * Either resumes the first waiting [retrieve] operation
      * and passes the [element] to it, or simply puts the
@@ -549,7 +560,7 @@ interface BlockingPool<T: Any> {
 /**
  * This pool uses queue under the hood and is implemented with simple cancellation.
  */
-internal class BlockingQueuePool<T: Any> : CancellableQueueSynchronizer<T>(), BlockingPool<T> {
+internal class BlockingQueuePool<T : Any> : CancellableQueueSynchronizer<T>(), BlockingPool<T> {
     override val resumeMode get() = ASYNC
 
     // > 0 -- number of elements;
@@ -608,7 +619,7 @@ internal class BlockingQueuePool<T: Any> : CancellableQueueSynchronizer<T>(), Bl
             } else {
                 // The pool is empty, suspend.
                 return suspendCancellableCoroutine { cont ->
-                    suspend(cont as @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Waiter)
+                    suspend(cont as Waiter)
                 }
             }
         }
@@ -644,7 +655,7 @@ internal class BlockingQueuePool<T: Any> : CancellableQueueSynchronizer<T>(), Bl
 
     companion object {
         @JvmStatic
-        val BROKEN = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Symbol("BROKEN")
+        val BROKEN = Symbol("BROKEN")
     }
 }
 
@@ -652,7 +663,7 @@ internal class BlockingQueuePool<T: Any> : CancellableQueueSynchronizer<T>(), Bl
  * This pool uses stack under the hood and shows how to use
  * smart cancellation for data structures that store resources.
  */
-internal class BlockingStackPool<T: Any> : CancellableQueueSynchronizer<T>(), BlockingPool<T> {
+internal class BlockingStackPool<T : Any> : CancellableQueueSynchronizer<T>(), BlockingPool<T> {
     override val resumeMode get() = ASYNC
     override val cancellationMode get() = SMART
 
@@ -716,7 +727,7 @@ internal class BlockingStackPool<T: Any> : CancellableQueueSynchronizer<T>(), Bl
             } else {
                 // The pool is empty, suspend.
                 return suspendCancellableCoroutine { cont ->
-                    suspend(cont as @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Waiter)
+                    suspend(cont as Waiter)
                 }
             }
         }
@@ -776,22 +787,23 @@ abstract class BlockingPoolLincheckTestBase(val p: BlockingPool<Unit>) : Abstrac
     suspend fun retrieve() = p.retrieve()
 
     @StateRepresentation
-    fun stateRepresentation() = when(p) {
+    fun stateRepresentation() = when (p) {
         is BlockingStackPool<*> -> p.stateRepresentation()
         is BlockingQueuePool<*> -> p.stateRepresentation()
         else -> error("Unknown pool type: ${p::class.simpleName}")
     }
 
-    override fun <O : Options<O, *>> O.customize(isStressTest: Boolean) =
+    override fun <O : Options<O, *>> O.customize() =
         sequentialSpecification(BlockingPoolUnitSequential::class.java)
 
-    override fun ModelCheckingOptions.customize(isStressTest: Boolean) =
+    override fun ModelCheckingOptions.customize() =
         checkObstructionFreedom()
 }
+
 class BlockingQueuePoolLincheckTest : BlockingPoolLincheckTestBase(BlockingQueuePool())
 class BlockingStackPoolLincheckTest : BlockingPoolLincheckTestBase(BlockingStackPool())
 
-class BlockingPoolUnitSequential : VerifierState() {
+class BlockingPoolUnitSequential {
     private var elements = 0
     private val waiters = ArrayList<CancellableContinuation<Unit>>()
 
@@ -799,10 +811,9 @@ class BlockingPoolUnitSequential : VerifierState() {
         while (true) {
             if (waiters.isNotEmpty()) {
                 val w = waiters.removeAt(0)
-                @Suppress("PackageDirectoryMismatch")
                 if (w.tryResume0(Unit) { put() }) return
             } else {
-                elements ++
+                elements++
                 return
             }
         }
@@ -817,6 +828,4 @@ class BlockingPoolUnitSequential : VerifierState() {
             }
         }
     }
-
-    override fun extractState() = elements
 }

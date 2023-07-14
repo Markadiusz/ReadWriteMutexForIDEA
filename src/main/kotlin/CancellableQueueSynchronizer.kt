@@ -2,16 +2,23 @@
  * Copyright 2016-2023 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license.
  */
 
-package kotlinx.coroutines.internal
+@file:Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER", "CANNOT_OVERRIDE_INVISIBLE_MEMBER")
+@file:OptIn(
+    ExperimentalCoroutinesApi::class, InternalCoroutinesApi::class, InternalCoroutinesApi::class,
+    InternalCoroutinesApi::class, InternalCoroutinesApi::class
+)
+
+package rwmutex
 
 import kotlinx.atomicfu.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.*
-import kotlinx.coroutines.internal.CancellableQueueSynchronizer.*
-import kotlinx.coroutines.internal.CancellableQueueSynchronizer.CancellationMode.*
-import kotlinx.coroutines.internal.CancellableQueueSynchronizer.ResumeMode.*
+import kotlinx.coroutines.internal.*
 import kotlinx.coroutines.selects.*
 import kotlinx.coroutines.sync.*
+import rwmutex.CancellableQueueSynchronizer.*
+import rwmutex.CancellableQueueSynchronizer.CancellationMode.*
+import rwmutex.CancellableQueueSynchronizer.ResumeMode.*
 import kotlin.coroutines.*
 import kotlin.math.*
 
@@ -124,7 +131,7 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
      * In this case, [tryReturnRefusedValue] is invoked with the value of this [resume],
      * following by [returnValue] if [tryReturnRefusedValue] fails.
      */
-    protected open fun onCancellation() : Boolean = error("not implemented")
+    protected open fun onCancellation(): Boolean = error("not implemented")
 
     /**
      * This function specifies how the value refused by this [CancellableQueueSynchronizer]
@@ -154,7 +161,6 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
         returnValue(value)
     }
 
-    @Suppress("INFERRED_TYPE_VARIABLE_INTO_POSSIBLE_EMPTY_INTERSECTION")
     internal fun suspendCancelled(): T? {
         // Increment `suspendIdx` and find the segment
         // with the corresponding id. It is guaranteed
@@ -163,9 +169,11 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
         // is not in the `CANCELLED` state.
         val curSuspendSegm = this.suspendSegment.value
         val suspendIdx = suspendIdx.getAndIncrement()
-        val segment = this.suspendSegment.findSegmentAndMoveForward(id = suspendIdx / SEGMENT_SIZE, startFrom = curSuspendSegm,
-            createNewSegment = ::createSegment).segment
-        @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") assert { segment.id == suspendIdx / SEGMENT_SIZE }
+
+        val segment = this.suspendSegment.findSegmentAndMoveForward(
+            id = suspendIdx / SEGMENT_SIZE, startFrom = curSuspendSegm,
+            createNewSegment = ::createSegment
+        ).segment
         // Try to install the waiter into the cell - this is the regular path.
         val i = (suspendIdx % SEGMENT_SIZE).toInt()
         if (segment.cas(i, null, CANCELLED)) {
@@ -188,13 +196,13 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
             return value as T
         }
         // The cell is broken, this can happen only in the `SYNC` resumption mode.
-        @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") assert { resumeMode == SYNC && segment.get(i) === BROKEN }
+        assert { resumeMode == SYNC && segment.get(i) === BROKEN }
         return null
     }
 
+    @Suppress("UNCHECKED_CAST")
     @OptIn(InternalCoroutinesApi::class)
-    @Suppress("UNCHECKED_CAST", "INFERRED_TYPE_VARIABLE_INTO_POSSIBLE_EMPTY_INTERSECTION")
-    internal fun suspend(waiter: @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Waiter): Boolean {
+    internal fun suspend(waiter: Waiter): Boolean {
         // Increment `suspendIdx` and find the segment
         // with the corresponding id. It is guaranteed
         // that this segment is not removed since at
@@ -202,9 +210,12 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
         // is not in the `CANCELLED` state.
         val curSuspendSegm = this.suspendSegment.value
         val suspendIdx = suspendIdx.getAndIncrement()
-        val segment = this.suspendSegment.findSegmentAndMoveForward(id = suspendIdx / SEGMENT_SIZE, startFrom = curSuspendSegm,
-            createNewSegment = ::createSegment).segment
-        @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") assert { segment.id == suspendIdx / SEGMENT_SIZE }
+
+        val segment = this.suspendSegment.findSegmentAndMoveForward(
+            id = suspendIdx / SEGMENT_SIZE, startFrom = curSuspendSegm,
+            createNewSegment = ::createSegment
+        ).segment
+        assert { segment.id == suspendIdx / SEGMENT_SIZE }
         // Try to install the waiter into the cell - this is the regular path.
         val i = (suspendIdx % SEGMENT_SIZE).toInt()
         if (segment.cas(i, null, waiter)) {
@@ -212,7 +223,7 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
             // `resume` cannot break the cell now, so this
             // suspension is successful.
             // Add a cancellation handler if required and finish.
-            @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") waiter.invokeOnCancellation(segment, i)
+            waiter.invokeOnCancellation(segment, i)
             return true
         }
         // The continuation installation has failed. This happened because a concurrent
@@ -230,6 +241,7 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                     waiter as CancellableContinuation<T>
                     waiter.resume(value, { returnValue(value) }) // TODO do we really need this?
                 }
+
                 is SelectInstance<*> -> {
                     waiter as SelectInstance<T>
                     waiter.selectInRegistrationPhase(value)
@@ -238,7 +250,7 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
             return true
         }
         // The cell is broken, this can happen only in the `SYNC` resumption mode.
-        @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") assert { resumeMode == SYNC && segment.get(i) === BROKEN }
+        assert { resumeMode == SYNC && segment.get(i) === BROKEN }
         return false
     }
 
@@ -283,8 +295,6 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
      * moves [resumeIdx] to the first possibly non-cancelled cell, i.e.,
      * to the first segment id multiplied by [SEGMENT_SIZE].
      */
-    @OptIn(InternalCoroutinesApi::class)
-    @Suppress("UNCHECKED_CAST", "INFERRED_TYPE_VARIABLE_INTO_POSSIBLE_EMPTY_INTERSECTION")
     private fun tryResumeImpl(value: T, adjustResumeIdx: Boolean): Int {
         // Check that `adjustResumeIdx` is `false` in the simple cancellation mode.
         check(!(cancellationMode == SIMPLE && adjustResumeIdx))
@@ -294,8 +304,10 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
         val curResumeSegm = this.resumeSegment.value
         val resumeIdx = resumeIdx.getAndIncrement()
         val id = resumeIdx / SEGMENT_SIZE
-        val segment = this.resumeSegment.findSegmentAndMoveForward(id, startFrom = curResumeSegm,
-            createNewSegment = ::createSegment).segment
+        val segment = this.resumeSegment.findSegmentAndMoveForward(
+            id, startFrom = curResumeSegm,
+            createNewSegment = ::createSegment
+        ).segment
         // The previous segments can be safely collected by GC, clean the pointer to them.
         segment.cleanPrev()
         // Is the required segment physically removed?
@@ -308,7 +320,7 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
         // Modify the cell according to the state machine,
         // all the transitions are performed atomically.
         val i = (resumeIdx % SEGMENT_SIZE).toInt()
-        modify_cell@while (true) {
+        modify_cell@ while (true) {
             val cellState = segment.get(i)
             when {
                 // Is the cell empty?
@@ -341,23 +353,23 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                 cellState === REFUSE -> {
                     // This state should not occur
                     // in the simple cancellation mode.
-                    @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") assert { cancellationMode != SIMPLE }
+                    assert { cancellationMode != SIMPLE }
                     // Return the refused value back to the
                     // data structure and finish successfully.
                     returnRefusedValue(value)
                     return TRY_RESUME_SUCCESS
                 }
                 // Does the cell store a cancellable continuation?
-                cellState is @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Waiter -> {
+                cellState is Waiter -> {
                     // Change the cell state to `RESUMED`, so
                     // the cancellation handler cannot be invoked
                     // even if the continuation becomes cancelled.
                     if (!segment.cas(i, cellState, RESUMED)) continue@modify_cell
                     // Try to resume the continuation.
-                    val resumed = when(cellState) {
+                    val resumed = when (cellState) {
                         is CancellableContinuation<*> -> {
                             (cellState as CancellableContinuation<T>)
-                            val token = cellState.tryResume(value, null, { returnValue(value) })
+                            val token = cellState.tryResume(value, null) { returnValue(value) }
                             if (token != null) {
                                 // Hooray, the continuation is successfully resumed!
                                 cellState.completeResume(token)
@@ -366,9 +378,11 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                                 false
                             }
                         }
+
                         is SelectInstance<*> -> {
                             cellState.trySelect(this@CancellableQueueSynchronizer, value)
                         }
+
                         else -> error("unexpected")
                     }
                     if (!resumed) {
@@ -424,9 +438,11 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                     // Resume the continuation and mark the cell
                     // as `RESUMED` to avoid memory leaks.
                     segment.set(i, RESUMED)
+                    @Suppress("UNCHECKED_CAST")
                     (cellState as Continuation<T>).resume(value)
                     return TRY_RESUME_SUCCESS
                 }
+
                 else -> error("Unexpected cell state: $cellState")
             }
         }
@@ -475,11 +491,13 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
     /**
      * The queue of waiters in [CancellableQueueSynchronizer] is represented as a linked list of [CQSSegment].
      */
-    private inner class CQSSegment(id: Long, prev: CQSSegment?, pointers: Int) : Segment<CQSSegment>(id, prev, pointers) {
-        private val waiters = atomicArrayOfNulls<Any?>(SEGMENT_SIZE)
-        override val numberOfSlots: Int get() = SEGMENT_SIZE
+    private inner class CQSSegment(id: Long, prev: CQSSegment?, pointers: Int) :
+        Segment<CQSSegment>(id, prev, pointers) {
 
-        override fun onCancellation(index: Int, cause: Throwable?) {
+        private val waiters = atomicArrayOfNulls<Any?>(SEGMENT_SIZE)
+        override val numberOfSlots get() = SEGMENT_SIZE
+
+        override fun onCancellation(index: Int, cause: Throwable?, context: CoroutineContext) {
             // Invoke the cancellation handler
             // only if the state is not `RESUMED`.
             //
@@ -556,9 +574,10 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                 val cellState = get(index)
                 when {
                     cellState === RESUMED -> return false
-                    cellState is @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Waiter -> {
+                    cellState is Waiter -> {
                         if (cas(index, cellState, CANCELLING)) return true
                     }
+
                     else -> {
                         if (cellState is Continuation<*>)
                             error("Only cancellable continuations can be cancelled, ${cellState::class.simpleName} has been detected")
@@ -607,8 +626,8 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
             val old = getAndSet(index, marker)
             // The cell should be in the `CANCELLING` state or store
             // an asynchronously put value at the point of this update.
-            @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") assert { old !== RESUMED && old !== CANCELLED && old !== REFUSE && old !== TAKEN && old !== BROKEN }
-            @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") assert { old !is Continuation<*> }
+            assert { old !== RESUMED && old !== CANCELLED && old !== REFUSE && old !== TAKEN && old !== BROKEN }
+            assert { old !is Continuation<*> }
             // Return `null` if no value has been passed in meantime.
             if (old === CANCELLING) return null
             // A concurrent `resume(..)` has put a value into the cell, return it as a result.
@@ -651,14 +670,14 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
  */
 private class WrappedContinuationValue(val cont: Continuation<*>)
 
-private val SEGMENT_SIZE = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") systemProp("kotlinx.coroutines.cqs.segmentSize", 16)
-private val MAX_SPIN_CYCLES = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") systemProp("kotlinx.coroutines.cqs.maxSpinCycles", 100)
-private val TAKEN = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Symbol("TAKEN")
-private val BROKEN = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Symbol("BROKEN")
-private val CANCELLING = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Symbol("CANCELLING")
-private val CANCELLED = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Symbol("CANCELLED")
-private val REFUSE = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Symbol("REFUSE")
-private val RESUMED = @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") Symbol("RESUMED")
+private val SEGMENT_SIZE = systemProp("kotlinx.coroutines.cqs.segmentSize", 2)
+private val MAX_SPIN_CYCLES = systemProp("kotlinx.coroutines.cqs.maxSpinCycles", 2)
+private val TAKEN = Symbol("TAKEN")
+private val BROKEN = Symbol("BROKEN")
+private val CANCELLING = Symbol("CANCELLING")
+private val CANCELLED = Symbol("CANCELLED")
+private val REFUSE = Symbol("REFUSE")
+private val RESUMED = Symbol("RESUMED")
 
 private const val TRY_RESUME_SUCCESS = 0
 private const val TRY_RESUME_FAIL_CANCELLED = 1

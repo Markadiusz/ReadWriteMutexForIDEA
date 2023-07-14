@@ -2,18 +2,19 @@
  * Copyright 2016-2020 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license.
  */
 @file:Suppress("unused")
+@file:OptIn(ExperimentalCoroutinesApi::class)
 
 package kotlinx.coroutines.lincheck
 
 import kotlinx.coroutines.*
-import kotlinx.coroutines.sync.*
-import kotlinx.coroutines.sync.ReadWriteMutexImpl.WriteUnlockPolicy.*
 import org.jetbrains.kotlinx.lincheck.*
 import org.jetbrains.kotlinx.lincheck.annotations.*
 import org.jetbrains.kotlinx.lincheck.annotations.Operation
 import org.jetbrains.kotlinx.lincheck.paramgen.*
 import org.jetbrains.kotlinx.lincheck.strategy.managed.modelchecking.*
 import org.jetbrains.kotlinx.lincheck.verifier.*
+import rwmutex.*
+import rwmutex.ReadWriteMutexImpl.WriteUnlockPolicy.*
 
 class ReadWriteMutexLincheckTest : AbstractLincheckTest() {
     private val m = ReadWriteMutexImpl()
@@ -54,12 +55,12 @@ class ReadWriteMutexLincheckTest : AbstractLincheckTest() {
     @StateRepresentation
     fun stateRepresentation() = m.stateRepresentation
 
-    override fun <O : Options<O, *>> O.customize(isStressTest: Boolean) =
+    override fun <O : Options<O, *>> O.customize() =
         actorsBefore(0)
             .actorsAfter(0)
             .sequentialSpecification(ReadWriteMutexLincheckTestSequential::class.java)
 
-    override fun ModelCheckingOptions.customize(isStressTest: Boolean) =
+    override fun ModelCheckingOptions.customize() =
         checkObstructionFreedom()
 }
 
@@ -191,10 +192,8 @@ internal class ReadWriteMutexCounterLincheckTest : AbstractLincheckTest() {
     @StateRepresentation
     fun stateRepresentation(): String = "$c + ${m.stateRepresentation}"
 
-    override fun <O : Options<O, *>> O.customize(isStressTest: Boolean): O =
-        actorsBefore(0)
-            .actorsAfter(0)
-            .sequentialSpecification(ReadWriteMutexCounterSequential::class.java)
+    override fun <O : Options<O, *>> O.customize(): O =
+        actorsBefore(0).actorsAfter(0).sequentialSpecification(ReadWriteMutexCounterSequential::class.java)
 }
 
 @Suppress("RedundantSuspendModifier")
