@@ -4,7 +4,7 @@
 @file:Suppress("unused")
 @file:OptIn(ExperimentalCoroutinesApi::class)
 
-package kotlinx.coroutines.lincheck
+package rwmutex
 
 import kotlinx.coroutines.*
 import org.jetbrains.kotlinx.lincheck.*
@@ -13,7 +13,6 @@ import org.jetbrains.kotlinx.lincheck.annotations.Operation
 import org.jetbrains.kotlinx.lincheck.paramgen.*
 import org.jetbrains.kotlinx.lincheck.strategy.managed.modelchecking.*
 import org.jetbrains.kotlinx.lincheck.verifier.*
-import rwmutex.*
 import rwmutex.ReadWriteMutexImpl.WriteUnlockPolicy.*
 
 class ReadWriteMutexLincheckTest : AbstractLincheckTest() {
@@ -64,7 +63,7 @@ class ReadWriteMutexLincheckTest : AbstractLincheckTest() {
         checkObstructionFreedom()
 }
 
-class ReadWriteMutexLincheckTestSequential : VerifierState() {
+class ReadWriteMutexLincheckTestSequential {
     private val m = ReadWriteMutexSequential()
     private val readLockAcquired = IntArray(6)
     private val writeLockAcquired = BooleanArray(6)
@@ -102,9 +101,6 @@ class ReadWriteMutexLincheckTestSequential : VerifierState() {
         writeLockAcquired[threadId] = false
         return true
     }
-
-    override fun extractState() =
-        "mutex=${m.state},rlaPerThread=${readLockAcquired.contentToString()},wlaPerThread=${writeLockAcquired.contentToString()}"
 }
 
 internal class ReadWriteMutexSequential {
@@ -174,8 +170,6 @@ internal class ReadWriteMutexSequential {
             wr.clear()
         }
     }
-
-    val state get() = "ar=$ar,wla=$wla,wr=${wr.size},ww=${ww.size}"
 }
 
 // This is an additional test to check the [ReadWriteMutex] synchronization contract.

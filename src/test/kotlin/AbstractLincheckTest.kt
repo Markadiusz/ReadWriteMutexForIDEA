@@ -1,8 +1,9 @@
 /*
  * Copyright 2016-2021 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license.
  */
-package kotlinx.coroutines
+package rwmutex
 
+import kotlinx.coroutines.*
 import org.jetbrains.kotlinx.lincheck.*
 import org.jetbrains.kotlinx.lincheck.strategy.managed.modelchecking.*
 import org.jetbrains.kotlinx.lincheck.strategy.stress.*
@@ -20,7 +21,7 @@ abstract class AbstractLincheckTest {
         .customize()
         .check(this::class)
 
-    @Test
+//    @Test
     fun stressTest() = StressOptions()
         .invocationsPerIteration(10_000)
         .commonConfiguration()

@@ -4,8 +4,7 @@
 
 @file:Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER", "CANNOT_OVERRIDE_INVISIBLE_MEMBER")
 @file:OptIn(
-    ExperimentalCoroutinesApi::class, InternalCoroutinesApi::class, InternalCoroutinesApi::class,
-    InternalCoroutinesApi::class, InternalCoroutinesApi::class
+    ExperimentalCoroutinesApi::class, InternalCoroutinesApi::class
 )
 
 package rwmutex

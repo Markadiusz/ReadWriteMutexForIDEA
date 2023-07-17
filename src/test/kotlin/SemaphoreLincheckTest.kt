@@ -3,7 +3,7 @@
  */
 @file:Suppress("unused")
 
-package kotlinx.coroutines.lincheck
+package rwmutex
 
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.*
