@@ -83,6 +83,12 @@ public interface ReadWriteMutexIdea {
     public fun readUnlock()
 
     /**
+     * Tries to acquire a reader lock of this mutex if the [writer lock][write] is not held and there is no writer
+     * waiting for it. Returns 'false' if the operation failed.
+     */
+    public fun tryReadLock(): Boolean
+
+    /**
      * Returns a [mutex][Mutex] which manipulates with the writer lock of this [ReadWriteMutexIdea].
      *
      * When acquires the writer lock, the operation completes immediately if neither the writer lock nor
@@ -209,7 +215,22 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
     @ExperimentalCoroutinesApi
     override val write: Mutex get() = this // we do not create an extra object this way.
     override val isLocked: Boolean get() = state.value.wla
-    override fun tryLock(owner: Any?): Boolean = error("ReadWriteMutexIdea.write does not support `tryLock()`")
+    override fun tryLock(owner: Any?): Boolean {
+        while (true) {
+            // Read the current state.
+            val s = state.value
+            // Is there an active writer (the WLA flag is set), a concurrent `writeUnlock` operation,
+            // which is releasing readers now (the RWR flag is set), or an active reader (AR >= 1)?
+            if (!s.wla && !s.rwr && s.ar == 0) {
+                assert { s.ww == 0 }
+                if (state.compareAndSet(s, state(0, true, 0, false)))
+                    return true
+                // CAS failed => the state has changed.
+                // Re-read it and try to acquire a writer lock again.
+                continue
+            } else return false
+        }
+    }
     override suspend fun lock(owner: Any?) {
         if (owner != null) error("ReadWriteMutexIdea.write does not support owners")
         writeLock()
@@ -232,7 +253,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         readLockSlowPath()
     }
 
-    private fun tryReadLock(): Boolean {
+    override fun tryReadLock(): Boolean {
         while (true) {
             // Read the current state.
             val s = state.value
@@ -380,14 +401,14 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         // The algorithm is straightforward -- it reads the current state,
         // checks that there is no reader or writer lock acquired, and
         // tries to change the state by atomically setting the `WLA` flag.
-        // Otherwise, if the writer lock cannot be acquired immediatelly,
+        // Otherwise, if the writer lock cannot be acquired immediately,
         // it increments the number of waiting writers and suspends in
         // `cqsWriters` waiting for the lock.
         while (true) {
             // Read the current state.
             val s = state.value
             // Is there an active writer (the WLA flag is set), a concurrent `writeUnlock` operation,
-            // which is releasing readers now (the RWR flag is set), or an active reader (AR >= 0)?
+            // which is releasing readers now (the RWR flag is set), or an active reader (AR >= 1)?
             if (!s.wla && !s.rwr && s.ar == 0) {
                 // Try to acquire the writer lock, re-try the operation if this CAS fails.
                 assert { s.ww == 0 }
@@ -418,7 +439,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         // We find the round-robin strategy fair enough in practice, but the others are used
         // in Lincheck tests. However, it could be useful to have `PRIORITIZE_WRITERS` policy
         // in the public API for the cases when the writer lock is used for UI updates.
-        writeUnlock(ROUND_ROBIN)
+        writeUnlock(PRIORITIZE_WRITERS)
     }
 
     internal fun writeUnlock(policy: WriteUnlockPolicy) {
