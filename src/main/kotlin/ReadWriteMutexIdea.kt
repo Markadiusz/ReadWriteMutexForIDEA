@@ -216,6 +216,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         while (true) {
             // Read the current state.
             val s = state.value
+            if (s.rwr) continue
             // Is there an active writer (the WLA flag is set), a concurrent `writeUnlock` operation,
             // which is releasing readers now (the RWR flag is set), or an active reader (AR >= 1)?
             if (!s.wla && !s.rwr && s.ar == 0) {
