@@ -12,8 +12,8 @@ import kotlinx.coroutines.selects.*
 import kotlinx.coroutines.sync.*
 import rwmutex.CancellableQueueSynchronizer.CancellationMode.*
 import rwmutex.CancellableQueueSynchronizer.ResumeMode.*
-import rwmutex.ReadWriteMutexIdeaImpl.WriteUnlockPolicy.*
 import kotlin.contracts.*
+import kotlin.coroutines.*
 
 /**
  * This readers-writer mutex maintains a logical pair of locks, one for read-only
@@ -209,9 +209,6 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
     private val cqsReaders = ReadersCQS() // the place where readers should suspend and be resumed
     private val cqsWriters = WritersCQS() // the place where writers should suspend and be resumed
 
-    private var curUnlockPolicy = false // false -- prioritize readers on the writer lock release
-    // true  -- prioritize writers on the writer lock release
-
     @ExperimentalCoroutinesApi
     override val write: Mutex get() = this // we do not create an extra object this way.
     override val isLocked: Boolean get() = state.value.wla
@@ -285,10 +282,14 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             if (s.wla || s.ww > 0) {
                 // The number of waiting readers was incremented
                 // correctly, wait for a reader lock in `cqsReaders`.
-                suspendCancellableCoroutineReusable<Unit> { cont ->
-                    cqsReaders.suspend(cont as Waiter)
+                val acquired: Boolean = suspendCancellableCoroutineReusable { cont ->
+                    if (!cqsReaders.suspend(cont as Waiter)) {
+                        cont.resume(false)
+                    }
                 }
-                return
+                if (acquired)
+                    return
+                assert {false} // assumes that suspend never fails
             } else {
                 // A race has been detected! The increment of the counter of
                 // waiting readers was wrong, try to decrement it back. However,
@@ -305,10 +306,14 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     // it is guaranteed that the lock will be provided
                     // when this concurrent `write.unlock()` completes.
                     if (wr == 0) {
-                        suspendCancellableCoroutineReusable<Unit> { cont ->
-                            cqsReaders.suspend(cont as Waiter)
+                        val acquired: Boolean = suspendCancellableCoroutineReusable { cont ->
+                            if (!cqsReaders.suspend(cont as Waiter)) {
+                                cont.resume(false)
+                            }
                         }
-                        return
+                        if (acquired)
+                            return
+                        assert {false} // assumes that suspend never fails
                     }
                     // Otherwise, try to decrement the number of waiting
                     // readers and retry the operation from the beginning.
@@ -336,10 +341,10 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 // Check whether there is a waiting writer and resume it.
                 // Otherwise, simply change the state and finish.
                 if (s.ww > 0) {
-                    // Try to decrement the number of waiting writers and set the `WLA` flag.
-                    // Resume the first waiting writer on success.
-                    if (state.compareAndSet(s, state(0, true, s.ww - 1, false))) {
-                        cqsWriters.resume(Unit)
+                    // Set the `WLA` flag.
+                    // Release the writers' lock.
+                    if (state.compareAndSet(s, state(0, true, s.ww, false))) {
+                        writeUnlock()
                         return
                     }
                 } else {
@@ -366,8 +371,8 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
      * so neither [suspend] nor [resume] fail. However, to support
      * `tryReadLock()` the synchronous resumption mode should be used.
      */
-    private inner class ReadersCQS : CancellableQueueSynchronizer<Unit>() {
-        override val resumeMode get() = ASYNC
+    private inner class ReadersCQS : CancellableQueueSynchronizer<Boolean>() {
+        override val resumeMode get() = SYNC
         override val cancellationMode get() = SMART
 
         override fun onCancellation(): Boolean {
@@ -390,11 +395,11 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
 
         // When `onCancellation()` fails, the state keeps unchanged. Therefore,
         // the reader lock should be returned back to the mutex in `returnValue(..)`.
-        override fun tryReturnRefusedValue(value: Unit) = false
+        override fun tryReturnRefusedValue(value: Boolean) = false
 
         // Returns the reader lock back to the mutex.
         // This function is also used for prompt cancellation.
-        override fun returnValue(value: Unit) = readUnlock()
+        override fun returnValue(value: Boolean) = readUnlock()
     }
 
     internal suspend fun writeLock() {
@@ -418,37 +423,27 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 // The lock cannot be acquired immediately, and this operation has to suspend.
                 // Try to increment the number of waiting writers and suspend in `cqsWriters`.
                 if (state.compareAndSet(s, state(s.ar, s.wla, s.ww + 1, s.rwr))) {
-                    suspendCancellableCoroutineReusable<Unit> { cont ->
-                        cqsWriters.suspend(cont as Waiter)
+                    val acquired: Boolean = suspendCancellableCoroutineReusable { cont ->
+                        if (!cqsWriters.suspend(cont as Waiter)) {
+                            cont.resume(false)
+                        }
                     }
-                    return
+                    if (acquired) {
+                        return
+                    }
+                    assert {false} // assumes that suspend never fails
                 }
             }
         }
     }
 
     internal fun writeUnlock() {
-        // Since we store waiting readers and writers separately, it is not easy
-        // to determine whether the next readers or the next writer should be resumed.
-        // However, it is natural to have the following policies:
-        // - PRIORITIZE_READERS -- always resume all waiting readers at first;
-        //   the next waiting writer is resumed only if no reader is waiting for a lock.
-        // - PRIORITIZE_WRITERS -- always resumed the next writer first;
-        // - ROUND_ROBIN -- switch between the policies above on every invocation.
-        //
-        // We find the round-robin strategy fair enough in practice, but the others are used
-        // in Lincheck tests. However, it could be useful to have `PRIORITIZE_WRITERS` policy
-        // in the public API for the cases when the writer lock is used for UI updates.
-        writeUnlock(PRIORITIZE_WRITERS)
-    }
-
-    internal fun writeUnlock(policy: WriteUnlockPolicy) {
         // The algorithm for releasing the writer lock is straightforward by design,
         // but has a lot of corner cases that should be properly managed.
-        // If the next writer should be resumed (see `PRIORITIZE_WRITERS` policy),
+        // If there is a writer to be resumed,
         // the algorithm tries to atomically decrement the number of waiting writers
         // and keep the `WLA` flag, resuming the first writer in `cqsWriters` after that.
-        // Otherwise, if the `PRIORITIZE_READERS` policy is used or there is no waiting writer,
+        // Otherwise, if there is no waiting writer,
         // the algorithm sets the `RWR` (resuming waiting readers) flag and invokes a special
         // `completeWaitingReadersResumption()` to resume all the waiting readers.
         while (true) {
@@ -458,14 +453,15 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             check(!s.rwr)
             assert { s.ar == 0 }
             // Should we resume the next writer?
-            curUnlockPolicy = !curUnlockPolicy // change the unlock policy for the `ROUND_ROBIN` strategy
-            val resumeWriter = (s.ww > 0) && (policy == PRIORITIZE_WRITERS || policy == ROUND_ROBIN && curUnlockPolicy)
+            val resumeWriter = s.ww > 0
             if (resumeWriter) {
                 // Resume the next writer - try to decrement the number of waiting
                 // writers and resume the first one in `cqsWriters` on success.
                 if (state.compareAndSet(s, state(0, true, s.ww - 1, false))) {
-                    cqsWriters.resume(Unit)
-                    return
+                    if (cqsWriters.resume(true)) {
+                        return
+                    }
+                    assert {false} // assumes that resume never fails
                 }
             } else {
                 // Resume waiting readers. Reset the `WLA` flag and set the `RWR` flag atomically,
@@ -504,7 +500,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         }
         // After the readers are resumed logically, they should be resumed physically in `cqsReaders`.
         repeat(wr) {
-            cqsReaders.resume(Unit)
+            cqsReaders.resume(true)
         }
         // Once all the waiting readers are resumed, the `RWR` flag should be reset.
         // It is possible that all the resumed readers have already completed their
@@ -521,7 +517,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         }
         if (resumeWriter) {
             // Resume the next writer physically and finish
-            cqsWriters.resume(Unit)
+            cqsWriters.resume(true)
             return
         }
         // Meanwhile, it could be possible for a writer to come and suspend due to the `RWR` flag.
@@ -548,8 +544,8 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
      * so neither [suspend] nor [resume] fail. However, in order to support
      * `tryWriteLock()` the synchronous resumption mode should be used instead.
      */
-    private inner class WritersCQS : CancellableQueueSynchronizer<Unit>() {
-        override val resumeMode get() = ASYNC
+    private inner class WritersCQS : CancellableQueueSynchronizer<Boolean>() {
+        override val resumeMode get() = SYNC
         override val cancellationMode get() = SMART
 
         override fun onCancellation(): Boolean {
@@ -583,14 +579,14 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
 
         // Resumes the next waiting writer if the current `writeLock()` operation
         // is already cancelled but the next writer is logically resumed
-        override fun tryReturnRefusedValue(value: Unit): Boolean {
-            writeUnlock(PRIORITIZE_WRITERS)
+        override fun tryReturnRefusedValue(value: Boolean): Boolean {
+            writeUnlock()
             return true
         }
 
         // Returns the writer lock back to the mutex.
         // This function is also used for prompt cancellation.
-        override fun returnValue(value: Unit) = writeUnlock()
+        override fun returnValue(value: Boolean) = writeUnlock()
     }
 
     // This state representation is used in Lincheck tests.
@@ -600,8 +596,6 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     ",wla=${state.value.wla},ww=${state.value.ww}" +
                     ",rwr=${state.value.rwr}" +
                     ",cqs_r={$cqsReaders},cqs_w={$cqsWriters}>"
-
-    internal enum class WriteUnlockPolicy { PRIORITIZE_READERS, PRIORITIZE_WRITERS, ROUND_ROBIN }
 }
 
 /**

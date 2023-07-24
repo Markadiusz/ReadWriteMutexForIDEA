@@ -333,15 +333,15 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                     if (resumeMode == ASYNC) return TRY_RESUME_SUCCESS
                     // Wait for a concurrent `suspend` (which should mark
                     // the cell as taken) for a bounded time in a spin-loop.
-                    var iteration = 0
+                    //var iteration = 0
                     while (true) {
                         if (segment.get(i) === TAKEN) return TRY_RESUME_SUCCESS
-                        iteration++
-                        if (resumeMode == SYNC && iteration > MAX_SPIN_CYCLES) break
+                        //iteration++
+                        //if (resumeMode == SYNC && iteration > MAX_SPIN_CYCLES) break
                     }
                     // The value is still not taken, try to atomically mark the cell as broken.
                     // A CAS failure indicates that the value is successfully taken.
-                    return if (segment.cas(i, value, BROKEN)) TRY_RESUME_FAIL_BROKEN else TRY_RESUME_SUCCESS
+                    //return if (segment.cas(i, value, BROKEN)) TRY_RESUME_FAIL_BROKEN else TRY_RESUME_SUCCESS
                 }
                 // Is the waiter cancelled?
                 cellState === CANCELLED -> {
@@ -410,7 +410,8 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                 }
                 // Does the cell store a cancelling waiter, which is already logically
                 // cancelled but the cancellation handler has not been completed yet?
-                cellState === CANCELLING -> {
+                //cellState === CANCELLING -> {
+                cellState is Thread -> {
                     // Fail in the simple cancellation mode.
                     if (cancellationMode == SIMPLE) return TRY_RESUME_FAIL_CANCELLED
                     // In the smart cancellation mode, this cell should be either skipped
@@ -421,7 +422,7 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                     // the overall algorithm blocking in theory, this cancellation handler and `resume` overlap occurs
                     // relatively rare in practice and it is guaranteed that one cancellation can block at most one
                     // `resume`, what makes the algorithm almost non-blocking in any real-world high-contended scenario.
-                    if (resumeMode == SYNC) continue@modify_cell
+                    if (resumeMode == SYNC && cellState !== Thread.currentThread()) continue@modify_cell
                     // In the asynchronous resumption mode, `resume` puts the resumption value into the cell,
                     // so the concurrent cancellation handler completes this `resume` after it decides whether
                     // the cell should be marked as `CANCELLED` or `REFUSE`. Thus, this `resume` is delegated to
@@ -574,7 +575,8 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                 when {
                     cellState === RESUMED -> return false
                     cellState is Waiter -> {
-                        if (cas(index, cellState, CANCELLING)) return true
+                        //if (cas(index, cellState, CANCELLING)) return true
+                        if (cas(index, cellState, Thread.currentThread())) return true
                     }
 
                     else -> {
@@ -628,7 +630,8 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
             assert { old !== RESUMED && old !== CANCELLED && old !== REFUSE && old !== TAKEN && old !== BROKEN }
             assert { old !is Continuation<*> }
             // Return `null` if no value has been passed in meantime.
-            if (old === CANCELLING) return null
+            //if (old === CANCELLING) return null
+            if (old is Thread) return null
             // A concurrent `resume(..)` has put a value into the cell, return it as a result.
             return if (old is WrappedContinuationValue) old.cont else old
         }

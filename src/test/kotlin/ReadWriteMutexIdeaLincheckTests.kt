@@ -13,7 +13,6 @@ import org.jetbrains.kotlinx.lincheck.annotations.Operation
 import org.jetbrains.kotlinx.lincheck.paramgen.*
 import org.jetbrains.kotlinx.lincheck.strategy.managed.modelchecking.*
 import org.jetbrains.kotlinx.lincheck.verifier.*
-import rwmutex.ReadWriteMutexIdeaImpl.WriteUnlockPolicy.*
 
 class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
     private val m = ReadWriteMutexIdeaImpl()
@@ -35,6 +34,13 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
     }
 
     @Operation(allowExtraSuspension = true, promptCancellation = false)
+    fun tryReadLock(@Param(gen = ThreadIdGen::class) threadId: Int): Boolean {
+        if (!m.tryReadLock()) return false
+        readLockAcquired[threadId]++
+        return true
+    }
+
+    @Operation(allowExtraSuspension = true, promptCancellation = false)
     suspend fun writeLock(@Param(gen = ThreadIdGen::class) threadId: Int) {
         m.writeLock()
         assert(!writeLockAcquired[threadId]) {
@@ -44,10 +50,17 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
     }
 
     @Operation
-    fun writeUnlock(@Param(gen = ThreadIdGen::class) threadId: Int, prioritizeWriters: Boolean): Boolean {
+    fun writeUnlock(@Param(gen = ThreadIdGen::class) threadId: Int): Boolean {
         if (!writeLockAcquired[threadId]) return false
-        m.writeUnlock(if (prioritizeWriters) PRIORITIZE_WRITERS else PRIORITIZE_READERS)
+        m.writeUnlock()
         writeLockAcquired[threadId] = false
+        return true
+    }
+
+    @Operation(allowExtraSuspension = true, promptCancellation = false)
+    fun tryWriteLock(@Param(gen = ThreadIdGen::class) threadId: Int): Boolean {
+        if (!m.tryLock()) return false
+        writeLockAcquired[threadId] = true
         return true
     }
 
@@ -60,7 +73,7 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
             .sequentialSpecification(ReadWriteMutexIdeaLincheckTestSequential::class.java)
 
     override fun ModelCheckingOptions.customize() =
-        checkObstructionFreedom()
+        checkObstructionFreedom(false)
 }
 
 class ReadWriteMutexIdeaLincheckTestSequential {
@@ -95,9 +108,9 @@ class ReadWriteMutexIdeaLincheckTestSequential {
         writeLockAcquired[threadId] = true
     }
 
-    fun writeUnlock(threadId: Int, prioritizeWriters: Boolean): Boolean {
+    fun writeUnlock(threadId: Int): Boolean {
         if (!writeLockAcquired[threadId]) return false
-        m.writeUnlock(prioritizeWriters)
+        m.writeUnlock()
         writeLockAcquired[threadId] = false
         return true
     }
@@ -131,7 +144,7 @@ internal class ReadWriteMutexIdeaSequential {
         if (ar == 0 && ww.isNotEmpty()) {
             wla = true
             val w = ww.removeAt(0)
-            w.resume(Unit) { writeUnlock(true) }
+            w.resume(Unit) { writeUnlock() }
         }
     }
 
@@ -159,10 +172,10 @@ internal class ReadWriteMutexIdeaSequential {
         }
     }
 
-    fun writeUnlock(prioritizeWriters: Boolean) {
-        if (ww.isNotEmpty() && prioritizeWriters) {
+    fun writeUnlock() {
+        if (ww.isNotEmpty()) {
             val w = ww.removeAt(0)
-            w.resume(Unit) { writeUnlock(prioritizeWriters) }
+            w.resume(Unit) { writeUnlock() }
         } else {
             wla = false
             ar = wr.size

@@ -24,7 +24,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.2")
 
     // Lincheck
-    testImplementation("org.jetbrains.kotlinx:lincheck:2.21")
+    testImplementation("org.jetbrains.kotlinx:lincheck:2.22")
 }
 
 buildscript {
