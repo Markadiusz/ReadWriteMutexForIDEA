@@ -356,6 +356,7 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                     // Return the refused value back to the
                     // data structure and finish successfully.
                     returnRefusedValue(value)
+                    segment.set(i, REFUSE_PROCESSED)
                     return TRY_RESUME_SUCCESS
                 }
                 // Does the cell store a cancellable continuation?
@@ -537,7 +538,11 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                 // The `resume(..)` that will come to this cell should be refused.
                 // Mark the cell correspondingly and help a concurrent
                 // `resume(..)` to process its value if needed.
-                val value = markRefuse(index) ?: return
+                val value = markRefuse(index)
+                if (value === null) {
+                    while (get(index) !== REFUSE_PROCESSED) {}
+                    return
+                }
                 @Suppress("UNCHECKED_CAST")
                 returnRefusedValue(value as T)
             }
@@ -679,6 +684,7 @@ private val BROKEN = Symbol("BROKEN")
 private val CANCELLING = Symbol("CANCELLING")
 private val CANCELLED = Symbol("CANCELLED")
 private val REFUSE = Symbol("REFUSE")
+private val REFUSE_PROCESSED = Symbol("REFUSE_PROCESSED")
 private val RESUMED = Symbol("RESUMED")
 
 private const val TRY_RESUME_SUCCESS = 0

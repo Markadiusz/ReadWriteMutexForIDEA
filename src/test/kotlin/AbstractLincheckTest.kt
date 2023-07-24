@@ -21,7 +21,7 @@ abstract class AbstractLincheckTest {
         .customize()
         .check(this::class)
 
-//    @Test
+    @Test
     fun stressTest() = StressOptions()
         .invocationsPerIteration(10_000)
         .commonConfiguration()
