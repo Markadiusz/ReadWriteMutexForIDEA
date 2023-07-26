@@ -244,7 +244,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
 
     override suspend fun readLock() {
         // Try to acquire a reader lock without suspension.
-        if (tryReadLock()) return
+        if (tryReadLock(true)) return
         // The attempt fails, invoke the slow-path. This slow-path
         // part is implemented in a separate function to guarantee
         // that the tail call optimization is applied here.
@@ -252,10 +252,14 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
     }
 
     override fun tryReadLock(): Boolean {
+        return tryReadLock(false)
+    }
+
+    private fun tryReadLock(isPartOfReadLock: Boolean): Boolean {
         while (true) {
             // Read the current state.
             val s = state.value
-            if (s.cnt > 0) continue
+            if (!isPartOfReadLock && s.cnt > 0) continue
             // Is the writer lock acquired or is there a waiting writer?
             if (!s.wla && s.ww <= 0) {
                 // A reader lock is available to acquire, try to do it!
