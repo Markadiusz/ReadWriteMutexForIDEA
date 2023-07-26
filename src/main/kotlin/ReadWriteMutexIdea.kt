@@ -221,7 +221,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             // which is releasing readers now (the RWR flag is set), or an active reader (AR >= 1)?
             if (!s.wla && !s.rwr && s.ar == 0) {
                 assert { s.ww == 0 }
-                if (state.compareAndSet(s, state(0, true, 0, false)))
+                if (state.compareAndSet(s, state(0, true, 0, false, s.cnt)))
                     return true
                 // CAS failed => the state has changed.
                 // Re-read it and try to acquire a writer lock again.
@@ -255,12 +255,13 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         while (true) {
             // Read the current state.
             val s = state.value
+            if (s.cnt > 0) continue
             // Is the writer lock acquired or is there a waiting writer?
             if (!s.wla && s.ww <= 0) {
                 // A reader lock is available to acquire, try to do it!
                 // Note that there can be a concurrent `write.unlock()` which is
                 // resuming readers now, so the `RWR` flag is set in this case.
-                if (state.compareAndSet(s, state(s.ar + 1, false, 0, s.rwr)))
+                if (state.compareAndSet(s, state(s.ar + 1, false, 0, s.rwr, s.cnt)))
                     return true
                 // CAS failed => the state has changed.
                 // Re-read it and try to acquire a reader lock again.
@@ -342,16 +343,16 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 // Check whether there is a waiting writer and resume it.
                 // Otherwise, simply change the state and finish.
                 if (s.ww > 0) {
-                    // Set the `WLA` flag.
-                    // Release the writers' lock.
-                    if (state.compareAndSet(s, state(0, true, s.ww, false))) {
-                        writeUnlock()
+                    // Try to decrement the number of waiting writers and set the `WLA` flag.
+                    // Resume the first waiting writer on success.
+                    if (state.compareAndSet(s, state(0, true, s.ww - 1, false, s.cnt))) {
+                        cqsWriters.resume(true)
                         return
                     }
                 } else {
                     // There is no waiting writer according to the state.
                     // Try to clear the number of active readers and finish.
-                    if (state.compareAndSet(s, state(0, false, 0, false)))
+                    if (state.compareAndSet(s, state(0, false, 0, false, s.cnt)))
                         return
                 }
             } else {
@@ -360,7 +361,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 // a concurrent unfinished `write.unlock()` operation which
                 // has resumed the current reader but the corresponding
                 // `readUnlock()` happened before this `write.unlock()` completion.
-                if (state.compareAndSet(s, state(s.ar - 1, false, s.ww, s.rwr)))
+                if (state.compareAndSet(s, state(s.ar - 1, false, s.ww, s.rwr, s.cnt)))
                     return
             }
         }
@@ -418,14 +419,19 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             if (!s.wla && !s.rwr && s.ar == 0) {
                 // Try to acquire the writer lock, re-try the operation if this CAS fails.
                 assert { s.ww == 0 }
-                if (state.compareAndSet(s, state(0, true, 0, false)))
+                if (state.compareAndSet(s, state(0, true, 0, false, s.cnt)))
                     return
             } else {
                 // The lock cannot be acquired immediately, and this operation has to suspend.
                 // Try to increment the number of waiting writers and suspend in `cqsWriters`.
-                if (state.compareAndSet(s, state(s.ar, s.wla, s.ww + 1, s.rwr))) {
+                if (state.compareAndSet(s, state(s.ar, s.wla, s.ww + 1, s.rwr, s.cnt + 1))) {
+                    val curSuspendSegm = cqsWriters.getSuspendSegment()
+                    val suspendIdx = cqsWriters.getAndIncrementSuspendIdx()
+                    state.getAndUpdate { s ->
+                        state(s.ar, s.wla, s.ww, s.rwr, s.cnt - 1)
+                    }
                     val acquired: Boolean = suspendCancellableCoroutineReusable { cont ->
-                        if (!cqsWriters.suspend(cont as Waiter)) {
+                        if (!cqsWriters.suspend(cont as Waiter, curSuspendSegm, suspendIdx)) {
                             cont.resume(false)
                         }
                     }
@@ -458,7 +464,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             if (resumeWriter) {
                 // Resume the next writer - try to decrement the number of waiting
                 // writers and resume the first one in `cqsWriters` on success.
-                if (state.compareAndSet(s, state(0, true, s.ww - 1, false))) {
+                if (state.compareAndSet(s, state(0, true, s.ww - 1, false, s.cnt))) {
                     if (cqsWriters.resume(true)) {
                         return
                     }
@@ -472,7 +478,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 // While it is possible that no reader is waiting for a lock, so that this CAS can be omitted,
                 // we do not add the corresponding code for simplicity since it does not improve the performance
                 // significantly but reduces the code readability.
-                if (state.compareAndSet(s, state(0, false, s.ww, true))) {
+                if (state.compareAndSet(s, state(0, false, s.ww, true, s.cnt))) {
                     completeWaitingReadersResumption()
                     return
                 }
@@ -496,7 +502,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             state.update { s ->
                 check(!s.wla) // the writer lock cannot be acquired now.
                 assert { s.rwr } // the `RWR` flag should still be set.
-                state(s.ar + wr, false, s.ww, true)
+                state(s.ar + wr, false, s.ww, true, s.cnt)
             }
         }
         // After the readers are resumed logically, they should be resumed physically in `cqsReaders`.
@@ -514,7 +520,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         state.getAndUpdate { s ->
             resumeWriter = s.ar == 0 && s.ww > 0
             val wwUpd = if (resumeWriter) s.ww - 1 else s.ww
-            state(s.ar, resumeWriter, wwUpd, false)
+            state(s.ar, resumeWriter, wwUpd, false, s.cnt)
         }
         if (resumeWriter) {
             // Resume the next writer physically and finish
@@ -531,7 +537,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 val s = state.value // Read the current state.
                 if (s.wla || s.ww > 0 || s.rwr) return // Check whether the readers resumption is valid.
                 // Try to set the `RWR` flag again and resume the waiting readers.
-                if (state.compareAndSet(s, state(s.ar, false, 0, true))) {
+                if (state.compareAndSet(s, state(s.ar, false, 0, true, s.cnt))) {
                     completeWaitingReadersResumption()
                     return
                 }
@@ -566,13 +572,13 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     // we do not add the corresponding code for simplicity since it does not improve the performance
                     // significantly but reduces the code readability. Note that the same logic appears in `writeUnlock(..)`,
                     // and the cancellation performance is less critical since the cancellation itself does not come for free.
-                    if (state.compareAndSet(s, state(s.ar, false, 0, true))) {
+                    if (state.compareAndSet(s, state(s.ar, false, 0, true, s.cnt))) {
                         completeWaitingReadersResumption()
                         return true
                     }
                 } else {
                     // There are multiple writers waiting for the lock. Try to decrement the number of them.
-                    if (state.compareAndSet(s, state(s.ar, s.wla, s.ww - 1, s.rwr)))
+                    if (state.compareAndSet(s, state(s.ar, s.wla, s.ww - 1, s.rwr, s.cnt)))
                         return true
                 }
             }
@@ -595,7 +601,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         get() =
             "<wr=${waitingReaders.value},ar=${state.value.ar}" +
                     ",wla=${state.value.wla},ww=${state.value.ww}" +
-                    ",rwr=${state.value.rwr}" +
+                    ",rwr=${state.value.rwr}" + ",cnt=${state.value.cnt}" +
                     ",cqs_r={$cqsReaders},cqs_w={$cqsWriters}>"
 }
 
@@ -607,12 +613,14 @@ private fun state(
     activeReaders: Int,
     writeLockAcquired: Boolean,
     waitingWriters: Int,
-    resumingWaitingReaders: Boolean
+    resumingWaitingReaders: Boolean,
+    toBeAddedWriters: Int
 ): Long =
     (if (writeLockAcquired) WLA_BIT else 0) +
             (if (resumingWaitingReaders) RWR_BIT else 0) +
             activeReaders * AR_MULTIPLIER +
-            waitingWriters * WW_MULTIPLIER
+            waitingWriters * WW_MULTIPLIER +
+            toBeAddedWriters * CNT_MULTIPLIER
 
 // Equals `true` if the `WLA` flag is set in this state.
 private val Long.wla: Boolean get() = this or WLA_BIT == this
@@ -624,12 +632,16 @@ private val Long.rwr: Boolean get() = this or RWR_BIT == this
 private val Long.ww: Int get() = ((this % AR_MULTIPLIER) / WW_MULTIPLIER).toInt()
 
 // The number of active readers specified in this state.
-private val Long.ar: Int get() = (this / AR_MULTIPLIER).toInt()
+private val Long.ar: Int get() = ((this % CNT_MULTIPLIER) / AR_MULTIPLIER).toInt()
+
+// The number of writers waiting to be added to the WritersCQS specified in this state.
+private val Long.cnt: Int get() = (this / CNT_MULTIPLIER).toInt()
 
 private const val WLA_BIT = 1L
 private const val RWR_BIT = 1L shl 1
 private const val WW_MULTIPLIER = 1L shl 2
-private const val AR_MULTIPLIER = 1L shl 33
+private const val AR_MULTIPLIER = 1L shl 26
+private const val CNT_MULTIPLIER = 1L shl 50
 
 private const val INVALID_UNLOCK_INVOCATION_TIP =
     "This can be caused by releasing the lock without acquiring it at first, " +

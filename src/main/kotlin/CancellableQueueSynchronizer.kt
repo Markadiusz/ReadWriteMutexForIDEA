@@ -199,16 +199,27 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
         return null
     }
 
+    internal fun getSuspendSegment(): CQSSegment {
+        return this.suspendSegment.value
+    }
+    internal fun getAndIncrementSuspendIdx(): Long {
+        return suspendIdx.getAndIncrement()
+    }
+
     @Suppress("UNCHECKED_CAST")
     @OptIn(InternalCoroutinesApi::class)
     internal fun suspend(waiter: Waiter): Boolean {
+        return suspend(waiter, getSuspendSegment(), getAndIncrementSuspendIdx())
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    @OptIn(InternalCoroutinesApi::class)
+    internal fun suspend(waiter: Waiter, curSuspendSegm: CQSSegment, suspendIdx: Long): Boolean {
         // Increment `suspendIdx` and find the segment
         // with the corresponding id. It is guaranteed
         // that this segment is not removed since at
         // least the cell for this `suspend` invocation
         // is not in the `CANCELLED` state.
-        val curSuspendSegm = this.suspendSegment.value
-        val suspendIdx = suspendIdx.getAndIncrement()
 
         val segment = this.suspendSegment.findSegmentAndMoveForward(
             id = suspendIdx / SEGMENT_SIZE, startFrom = curSuspendSegm,
@@ -356,7 +367,7 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                     // Return the refused value back to the
                     // data structure and finish successfully.
                     returnRefusedValue(value)
-                    segment.set(i, REFUSE_PROCESSED)
+                    segment.set(i, PROCESSED)
                     return TRY_RESUME_SUCCESS
                 }
                 // Does the cell store a cancellable continuation?
@@ -400,13 +411,18 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                             // Try to resume the next waiter. If the resumption fails due to
                             // a race in the synchronous mode, the value should be returned
                             // back to the data structure.
-                            if (!resume(value)) returnValue(value)
+                            if (!resume(value)) {
+                                returnValue(value)
+                                segment.set(i, PROCESSED)
+                            }
                         } else {
                             // The value is refused by this CQS, return it back to the data structure.
                             returnRefusedValue(value)
+                            segment.set(i, PROCESSED)
                         }
                     }
                     // Once the state is changed to `RESUMED`, `resume` is considered as successful.
+                    segment.set(i, PROCESSED)
                     return TRY_RESUME_SUCCESS
                 }
                 // Does the cell store a cancelling waiter, which is already logically
@@ -492,7 +508,7 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
     /**
      * The queue of waiters in [CancellableQueueSynchronizer] is represented as a linked list of [CQSSegment].
      */
-    private inner class CQSSegment(id: Long, prev: CQSSegment?, pointers: Int) :
+    internal inner class CQSSegment(id: Long, prev: CQSSegment?, pointers: Int) :
         Segment<CQSSegment>(id, prev, pointers) {
 
         private val waiters = atomicArrayOfNulls<Any?>(SEGMENT_SIZE)
@@ -506,7 +522,10 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
             // resumption is considered as logically successful,
             // and the value can be returned back to the data structure
             // only via a `returnValue(..)` call.
-            if (!tryMarkCancelling(index)) return
+            if (!tryMarkCancelling(index)) {
+                while (get(index) !== PROCESSED) {}
+                return
+            }
             // Do we use simple or smart cancellation?
             if (cancellationMode === SIMPLE) {
                 // In the simple cancellation mode the logic
@@ -540,7 +559,7 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                 // `resume(..)` to process its value if needed.
                 val value = markRefuse(index)
                 if (value === null) {
-                    while (get(index) !== REFUSE_PROCESSED) {}
+                    while (get(index) !== PROCESSED) {}
                     return
                 }
                 @Suppress("UNCHECKED_CAST")
@@ -579,6 +598,7 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                 val cellState = get(index)
                 when {
                     cellState === RESUMED -> return false
+                    cellState === PROCESSED -> return false
                     cellState is Waiter -> {
                         //if (cas(index, cellState, CANCELLING)) return true
                         if (cas(index, cellState, Thread.currentThread())) return true
@@ -684,7 +704,7 @@ private val BROKEN = Symbol("BROKEN")
 private val CANCELLING = Symbol("CANCELLING")
 private val CANCELLED = Symbol("CANCELLED")
 private val REFUSE = Symbol("REFUSE")
-private val REFUSE_PROCESSED = Symbol("REFUSE_PROCESSED")
+private val PROCESSED = Symbol("PROCESSED")
 private val RESUMED = Symbol("RESUMED")
 
 private const val TRY_RESUME_SUCCESS = 0
