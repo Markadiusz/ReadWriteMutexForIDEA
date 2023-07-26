@@ -411,14 +411,10 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                             // Try to resume the next waiter. If the resumption fails due to
                             // a race in the synchronous mode, the value should be returned
                             // back to the data structure.
-                            if (!resume(value)) {
-                                returnValue(value)
-                                segment.set(i, PROCESSED)
-                            }
+                            if (!resume(value)) returnValue(value)
                         } else {
                             // The value is refused by this CQS, return it back to the data structure.
                             returnRefusedValue(value)
-                            segment.set(i, PROCESSED)
                         }
                     }
                     // Once the state is changed to `RESUMED`, `resume` is considered as successful.
