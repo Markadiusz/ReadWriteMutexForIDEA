@@ -199,27 +199,24 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
         return null
     }
 
-    internal fun getSuspendSegment(): CQSSegment {
-        return this.suspendSegment.value
+    internal fun getSuspendIdx(): Long {
+        return suspendIdx.value
     }
-    internal fun getAndIncrementSuspendIdx(): Long {
-        return suspendIdx.getAndIncrement()
+
+    internal fun getResumeIdx(): Long {
+        return resumeIdx.value
     }
 
     @Suppress("UNCHECKED_CAST")
     @OptIn(InternalCoroutinesApi::class)
     internal fun suspend(waiter: Waiter): Boolean {
-        return suspend(waiter, getSuspendSegment(), getAndIncrementSuspendIdx())
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    @OptIn(InternalCoroutinesApi::class)
-    internal fun suspend(waiter: Waiter, curSuspendSegm: CQSSegment, suspendIdx: Long): Boolean {
         // Increment `suspendIdx` and find the segment
         // with the corresponding id. It is guaranteed
         // that this segment is not removed since at
         // least the cell for this `suspend` invocation
         // is not in the `CANCELLED` state.
+        val curSuspendSegm = this.suspendSegment.value
+        val suspendIdx = suspendIdx.getAndIncrement()
 
         val segment = this.suspendSegment.findSegmentAndMoveForward(
             id = suspendIdx / SEGMENT_SIZE, startFrom = curSuspendSegm,
