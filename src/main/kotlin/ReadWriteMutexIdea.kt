@@ -256,8 +256,9 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             // Read the current state.
             val s = state.value
 
-            // Is the writer lock acquired or is there a waiting writer?
+            // Is the writer lock acquired?
             if (!s.wla) {
+                // Is there a waiting writer?
                 if (s.ww <= 0) {
                     // A reader lock is available to acquire, try to do it!
                     // Note that there can be a concurrent `write.unlock()` which is
@@ -270,10 +271,12 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 } else {
                     if (cqsWriters.getResumeIdx() == cqsWriters.getSuspendIdx()) {
                         // The waiting writers haven't been added to the csqWriters yet.
-                        // Try to acquire the lock before it to preserve linearizability.
+                        // Try to acquire the lock before them to preserve linearizability.
                         if (s.ar > 0 && state.compareAndSet(s, state(s.ar + 1, false, s.ww, s.rwr)))
                             return true
-                        // CAS failed => the state has changed.
+                        // Either there are no active readers,
+                        // so we must wait for one of the waiting writers to be added to the csqWriters,
+                        // or CAS failed => the state has changed.
                         // Re-read it and try to acquire a reader lock again.
                         continue
                     }
