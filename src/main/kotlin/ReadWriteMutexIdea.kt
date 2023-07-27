@@ -269,7 +269,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     // Re-read it and try to acquire a reader lock again.
                     continue
                 } else {
-                    if (cqsWriters.getResumeIdx() == cqsWriters.getSuspendIdx()) {
+                    if (cqsWriters.getResumeIdx() >= cqsWriters.getSuspendIdx()) {
                         // The waiting writers haven't been added to the csqWriters yet.
                         // Try to acquire the lock before them to preserve linearizability.
                         if (s.ar > 0 && state.compareAndSet(s, state(s.ar + 1, false, s.ww, s.rwr)))
