@@ -256,6 +256,16 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             // Read the current state.
             val s = state.value
 
+            if (s.rwr) {
+                // Writers are being resumed, so we are free to acquire the reader lock.
+                if (state.compareAndSet(s, state(s.ar + 1, false, s.ww, s.rwr))) {
+                    return true
+                }
+                // CAS failed => the state has changed.
+                // Re-read it and try to acquire a reader lock again.
+                continue
+            }
+
             // Is the writer lock acquired?
             if (!s.wla) {
                 // Is there a waiting writer?
