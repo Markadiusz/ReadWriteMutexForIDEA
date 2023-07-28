@@ -257,7 +257,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             val s = state.value
 
             if (s.rwr) {
-                // Writers are being resumed, so we are free to acquire the reader lock.
+                // Waiting readers are being resumed, so we are free to acquire the reader lock.
                 if (state.compareAndSet(s, state(s.ar + 1, false, s.ww, s.rwr))) {
                     return true
                 }
