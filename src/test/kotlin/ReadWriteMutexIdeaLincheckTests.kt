@@ -33,7 +33,7 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
         return true
     }
 
-    @Operation
+    //@Operation
     fun tryReadLock(@Param(gen = ThreadIdGen::class) threadId: Int): Boolean {
         if (!m.tryReadLock()) return false
         readLockAcquired[threadId]++
