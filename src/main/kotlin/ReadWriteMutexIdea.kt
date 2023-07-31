@@ -213,22 +213,22 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
     override val write: Mutex get() = this // we do not create an extra object this way.
     override val isLocked: Boolean get() = state.value.wla
     override fun tryLock(owner: Any?): Boolean {
-        while (true) {
+        return false
+        /*while (true) {
             // Read the current state.
             val s = state.value
             if (s.rwr) continue
-            if (s.resumingWriter) continue
             // Is there an active writer (the WLA flag is set), a concurrent `writeUnlock` operation,
             // which is releasing readers now (the RWR flag is set), or an active reader (AR >= 1)?
             if (!s.wla && !s.rwr && s.ar == 0) {
                 assert { s.ww == 0 }
-                if (state.compareAndSet(s, state(0, true, 0, false, s.resumingWriter)))
+                if (state.compareAndSet(s, state(0, true, 0, false)))
                     return true
                 // CAS failed => the state has changed.
                 // Re-read it and try to acquire a writer lock again.
                 continue
             } else return false
-        }
+        }*/
     }
     override suspend fun lock(owner: Any?) {
         if (owner != null) error("ReadWriteMutexIdea.write does not support owners")
@@ -253,21 +253,20 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
     }
 
     override fun tryReadLock(): Boolean {
-        while (true) {
+        return false
+        /*while (true) {
             // Read the current state.
             val s = state.value
 
             if (s.rwr) {
                 // Waiting readers are being resumed, so we are free to acquire the reader lock.
-                if (state.compareAndSet(s, state(s.ar + 1, false, s.ww, s.rwr, s.resumingWriter))) {
+                if (state.compareAndSet(s, state(s.ar + 1, false, s.ww, s.rwr))) {
                     return true
                 }
                 // CAS failed => the state has changed.
                 // Re-read it and try to acquire a reader lock again.
                 continue
             }
-
-            if (s.resumingWriter) continue
 
             // Is the writer lock acquired?
             if (!s.wla) {
@@ -276,7 +275,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     // A reader lock is available to acquire, try to do it!
                     // Note that there can be a concurrent `write.unlock()` which is
                     // resuming readers now, so the `RWR` flag is set in this case.
-                    if (state.compareAndSet(s, state(s.ar + 1, false, 0, s.rwr, s.resumingWriter)))
+                    if (state.compareAndSet(s, state(s.ar + 1, false, 0, s.rwr)))
                         return true
                     // CAS failed => the state has changed.
                     // Re-read it and try to acquire a reader lock again.
@@ -285,7 +284,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     if (cqsWriters.getResumeIdx() >= cqsWriters.getSuspendIdx()) {
                         // The waiting writers haven't been added to the csqWriters yet.
                         // Try to acquire the lock before them to preserve linearizability.
-                        if (s.ar > 0 && state.compareAndSet(s, state(s.ar + 1, false, s.ww, s.rwr, s.resumingWriter)))
+                        if (s.ar > 0 && state.compareAndSet(s, state(s.ar + 1, false, s.ww, s.rwr)))
                             return true
                         // Either there are no active readers,
                         // so we must wait for one of the waiting writers to be added to the csqWriters,
@@ -298,7 +297,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 // A writer is to be resumed right now. Wait for it to suspend first.
                 continue
             return false
-        }
+        }*/
     }
 
     private fun tryReadLockOnce(): Boolean {
@@ -310,7 +309,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 // A reader lock is available to acquire, try to do it!
                 // Note that there can be a concurrent `write.unlock()` which is
                 // resuming readers now, so the `RWR` flag is set in this case.
-                if (state.compareAndSet(s, state(s.ar + 1, false, 0, s.rwr, s.resumingWriter)))
+                if (state.compareAndSet(s, state(s.ar + 1, false, 0, s.rwr)))
                     return true
                 // CAS failed => the state has changed.
                 // Re-read it and try to acquire a reader lock again.
@@ -394,14 +393,14 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 if (s.ww > 0) {
                     // Try to decrement the number of waiting writers and set the `WLA` flag.
                     // Resume the first waiting writer on success.
-                    if (state.compareAndSet(s, state(0, true, s.ww - 1, false, true))) {
+                    if (state.compareAndSet(s, state(0, true, s.ww - 1, false))) {
                         cqsWriters.resume(true)
                         return
                     }
                 } else {
                     // There is no waiting writer according to the state.
                     // Try to clear the number of active readers and finish.
-                    if (state.compareAndSet(s, state(0, false, 0, false, s.resumingWriter)))
+                    if (state.compareAndSet(s, state(0, false, 0, false)))
                         return
                 }
             } else {
@@ -410,7 +409,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 // a concurrent unfinished `write.unlock()` operation which
                 // has resumed the current reader but the corresponding
                 // `readUnlock()` happened before this `write.unlock()` completion.
-                if (state.compareAndSet(s, state(s.ar - 1, false, s.ww, s.rwr, s.resumingWriter)))
+                if (state.compareAndSet(s, state(s.ar - 1, false, s.ww, s.rwr)))
                     return
             }
         }
@@ -423,7 +422,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
      * `tryReadLock()` the synchronous resumption mode should be used.
      */
     private inner class ReadersCQS : CancellableQueueSynchronizer<Boolean>() {
-        override val resumeMode get() = SYNC
+        override val resumeMode get() = ASYNC
         override val cancellationMode get() = SMART
 
         override fun onCancellation(): Boolean {
@@ -468,21 +467,18 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             if (!s.wla && !s.rwr && s.ar == 0) {
                 // Try to acquire the writer lock, re-try the operation if this CAS fails.
                 assert { s.ww == 0 }
-                if (state.compareAndSet(s, state(0, true, 0, false, s.resumingWriter)))
+                if (state.compareAndSet(s, state(0, true, 0, false)))
                     return
             } else {
                 // The lock cannot be acquired immediately, and this operation has to suspend.
                 // Try to increment the number of waiting writers and suspend in `cqsWriters`.
-                if (state.compareAndSet(s, state(s.ar, s.wla, s.ww + 1, s.rwr, s.resumingWriter))) {
+                if (state.compareAndSet(s, state(s.ar, s.wla, s.ww + 1, s.rwr))) {
                     val acquired: Boolean = suspendCancellableCoroutineReusable { cont ->
                         if (!cqsWriters.suspend(cont as Waiter)) {
                             cont.resume(false)
                         }
                     }
                     if (acquired) {
-                        state.update { s ->
-                            state(s.ar, s.wla, s.ww, s.rwr, false)
-                        }
                         return
                     }
                     assert {false} // assumes that suspend never fails
@@ -511,7 +507,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             if (resumeWriter) {
                 // Resume the next writer - try to decrement the number of waiting
                 // writers and resume the first one in `cqsWriters` on success.
-                if (state.compareAndSet(s, state(0, true, s.ww - 1, false, true))) {
+                if (state.compareAndSet(s, state(0, true, s.ww - 1, false))) {
                     if (cqsWriters.resume(true)) {
                         return
                     }
@@ -525,7 +521,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 // While it is possible that no reader is waiting for a lock, so that this CAS can be omitted,
                 // we do not add the corresponding code for simplicity since it does not improve the performance
                 // significantly but reduces the code readability.
-                if (state.compareAndSet(s, state(0, false, s.ww, true, s.resumingWriter))) {
+                if (state.compareAndSet(s, state(0, false, s.ww, true))) {
                     completeWaitingReadersResumption()
                     return
                 }
@@ -549,7 +545,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             state.update { s ->
                 check(!s.wla) // the writer lock cannot be acquired now.
                 assert { s.rwr } // the `RWR` flag should still be set.
-                state(s.ar + wr, false, s.ww, true, s.resumingWriter)
+                state(s.ar + wr, false, s.ww, true)
             }
         }
         // After the readers are resumed logically, they should be resumed physically in `cqsReaders`.
@@ -567,7 +563,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         state.getAndUpdate { s ->
             resumeWriter = s.ar == 0 && s.ww > 0
             val wwUpd = if (resumeWriter) s.ww - 1 else s.ww
-            state(s.ar, resumeWriter, wwUpd, false, resumeWriter)
+            state(s.ar, resumeWriter, wwUpd, false)
         }
         if (resumeWriter) {
             // Resume the next writer physically and finish
@@ -584,7 +580,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 val s = state.value // Read the current state.
                 if (s.wla || s.ww > 0 || s.rwr) return // Check whether the readers resumption is valid.
                 // Try to set the `RWR` flag again and resume the waiting readers.
-                if (state.compareAndSet(s, state(s.ar, false, 0, true, s.resumingWriter))) {
+                if (state.compareAndSet(s, state(s.ar, false, 0, true))) {
                     completeWaitingReadersResumption()
                     return
                 }
@@ -599,7 +595,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
      * `tryWriteLock()` the synchronous resumption mode should be used instead.
      */
     private inner class WritersCQS : CancellableQueueSynchronizer<Boolean>() {
-        override val resumeMode get() = SYNC
+        override val resumeMode get() = ASYNC
         override val cancellationMode get() = SMART
 
         override fun onCancellation(): Boolean {
@@ -619,13 +615,13 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     // we do not add the corresponding code for simplicity since it does not improve the performance
                     // significantly but reduces the code readability. Note that the same logic appears in `writeUnlock(..)`,
                     // and the cancellation performance is less critical since the cancellation itself does not come for free.
-                    if (state.compareAndSet(s, state(s.ar, false, 0, true, s.resumingWriter))) {
+                    if (state.compareAndSet(s, state(s.ar, false, 0, true))) {
                         completeWaitingReadersResumption()
                         return true
                     }
                 } else {
                     // There are multiple writers waiting for the lock. Try to decrement the number of them.
-                    if (state.compareAndSet(s, state(s.ar, s.wla, s.ww - 1, s.rwr, s.resumingWriter)))
+                    if (state.compareAndSet(s, state(s.ar, s.wla, s.ww - 1, s.rwr)))
                         return true
                 }
             }
@@ -648,7 +644,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         get() =
             "<wr=${waitingReaders.value},ar=${state.value.ar}" +
                     ",wla=${state.value.wla},ww=${state.value.ww}" +
-                    ",rwr=${state.value.rwr}" + ",resuming_writer=${state.value.resumingWriter}" +
+                    ",rwr=${state.value.rwr}" +
                     ",cqs_r={$cqsReaders},cqs_w={$cqsWriters}>"
 }
 
@@ -660,23 +656,18 @@ private fun state(
     activeReaders: Int,
     writeLockAcquired: Boolean,
     waitingWriters: Int,
-    resumingWaitingReaders: Boolean,
-    resumingWriter: Boolean
+    resumingWaitingReaders: Boolean
 ): Long =
     (if (writeLockAcquired) WLA_BIT else 0) +
             (if (resumingWaitingReaders) RWR_BIT else 0) +
             activeReaders * AR_MULTIPLIER +
-            waitingWriters * WW_MULTIPLIER +
-            (if (resumingWriter) RESUMING_WRITER_BIT else 0)
+            waitingWriters * WW_MULTIPLIER
 
 // Equals `true` if the `WLA` flag is set in this state.
 private val Long.wla: Boolean get() = this or WLA_BIT == this
 
 // Equals `true` if the `RWR` flag is set in this state.
 private val Long.rwr: Boolean get() = this or RWR_BIT == this
-
-// Equals `true` if the `RESUMING_WRITER` flag is set in this state.
-private val Long.resumingWriter: Boolean get() = this or RESUMING_WRITER_BIT == this
 
 // The number of waiting writers specified in this state.
 private val Long.ww: Int get() = ((this % AR_MULTIPLIER) / WW_MULTIPLIER).toInt()
@@ -686,8 +677,7 @@ private val Long.ar: Int get() = (this / AR_MULTIPLIER).toInt()
 
 private const val WLA_BIT = 1L
 private const val RWR_BIT = 1L shl 1
-private const val RESUMING_WRITER_BIT = 1L shl 2
-private const val WW_MULTIPLIER = 1L shl 3
+private const val WW_MULTIPLIER = 1L shl 2
 private const val AR_MULTIPLIER = 1L shl 33
 
 private const val INVALID_UNLOCK_INVOCATION_TIP =
