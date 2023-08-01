@@ -88,11 +88,11 @@ public interface ReadWriteMutexIdea {
      */
     public fun tryReadLock(): Boolean
 
-    public fun writeIntentLock()
+    public suspend fun writeIntentLock()
 
     public fun writeIntentUnlock()
 
-    public fun upgradeWriteIntentToWriteLock()
+    public suspend fun upgradeWriteIntentToWriteLock()
 
     /**
      * Returns a [mutex][Mutex] which manipulates with the writer lock of this [ReadWriteMutexIdea].
@@ -215,11 +215,11 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
     private val cqsReaders = ReadersCQS() // the place where readers should suspend and be resumed
     private val cqsWriters = WritersCQS() // the place where writers should suspend and be resumed
 
-    override fun writeIntentLock() {}
+    override suspend fun writeIntentLock() {}
 
     override fun writeIntentUnlock() {}
 
-    override fun upgradeWriteIntentToWriteLock() {}
+    override suspend fun upgradeWriteIntentToWriteLock() {}
 
     @ExperimentalCoroutinesApi
     override val write: Mutex get() = this // we do not create an extra object this way.

@@ -18,6 +18,30 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
     private val m = ReadWriteMutexIdeaImpl()
     private val readLockAcquired = IntArray(6)
     private val writeLockAcquired = BooleanArray(6)
+    private val intentWriteLockAcquired = IntArray(6)
+
+    @Operation(allowExtraSuspension = true, promptCancellation = false)
+    suspend fun writeIntentLock(@Param(gen = ThreadIdGen::class) threadId: Int) {
+        m.writeIntentLock()
+        intentWriteLockAcquired[threadId]++
+    }
+
+    @Operation
+    fun writeIntentUnlock(@Param(gen = ThreadIdGen::class) threadId: Int): Boolean {
+        if (intentWriteLockAcquired[threadId] == 0) return false
+        m.writeIntentUnlock()
+        intentWriteLockAcquired[threadId]--
+        return true
+    }
+
+    @Operation
+    suspend fun upgradeWriteIntentToWriteLock(@Param(gen = ThreadIdGen::class) threadId: Int): Boolean {
+        if (intentWriteLockAcquired[threadId] != 1 || readLockAcquired[threadId] != 0) return false
+        m.upgradeWriteIntentToWriteLock()
+        intentWriteLockAcquired[threadId]--
+        writeLockAcquired[threadId] = true
+        return true
+    }
 
     @Operation(allowExtraSuspension = true, promptCancellation = false)
     suspend fun readLock(@Param(gen = ThreadIdGen::class) threadId: Int) {
@@ -80,6 +104,27 @@ class ReadWriteMutexIdeaLincheckTestSequential {
     private val m = ReadWriteMutexIdeaSequential()
     private val readLockAcquired = IntArray(6)
     private val writeLockAcquired = BooleanArray(6)
+    private val intentWriteLockAcquired = IntArray(6)
+
+    suspend fun writeIntentLock(threadId: Int) {
+        m.writeIntentLock()
+        intentWriteLockAcquired[threadId]++
+    }
+
+    fun writeIntentUnlock(threadId: Int): Boolean {
+        if (intentWriteLockAcquired[threadId] == 0) return false
+        m.writeIntentUnlock()
+        intentWriteLockAcquired[threadId]--
+        return true
+    }
+
+    suspend fun upgradeWriteIntentToWriteLock(threadId: Int): Boolean {
+        if (intentWriteLockAcquired[threadId] != 1 || readLockAcquired[threadId] != 0) return false
+        m.upgradeWriteIntentToWriteLock()
+        intentWriteLockAcquired[threadId]--
+        writeLockAcquired[threadId] = true
+        return true
+    }
 
     fun tryReadLock(threadId: Int): Boolean =
         m.tryReadLock().also { success ->
@@ -121,6 +166,31 @@ internal class ReadWriteMutexIdeaSequential {
     private var wla = false
     private val wr = ArrayList<CancellableContinuation<Unit>>()
     private val ww = ArrayList<CancellableContinuation<Unit>>()
+
+    suspend fun writeIntentLock() = readLock()
+
+    fun writeIntentUnlock() = readUnlock()
+
+    suspend fun upgradeWriteIntentToWriteLock() {
+        if (ar > 1 || ww.isNotEmpty()) {
+            ar--
+            suspendCancellableCoroutine<Unit> { cont ->
+                ww += cont
+                cont.invokeOnCancellation {
+                    ww -= cont
+                    if (!wla && ww.isEmpty()) {
+                        ar += wr.size
+                        wr.forEach { it.resume(Unit) { readUnlock() } }
+                        wr.clear()
+                    }
+                }
+            }
+        }
+        else {
+            ar = 0
+            wla = true
+        }
+    }
 
     fun tryReadLock(): Boolean {
         if (wla || ww.isNotEmpty()) return false
