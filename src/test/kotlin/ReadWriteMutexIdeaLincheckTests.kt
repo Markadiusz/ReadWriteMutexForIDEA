@@ -174,6 +174,11 @@ internal class ReadWriteMutexIdeaSequential {
     suspend fun upgradeWriteIntentToWriteLock() {
         if (ar > 1 || ww.isNotEmpty()) {
             ar--
+            if (ar == 0) {
+                wla = true
+                val w = ww.removeAt(0)
+                w.resume(Unit) { writeUnlock() }
+            }
             suspendCancellableCoroutine<Unit> { cont ->
                 ww += cont
                 cont.invokeOnCancellation {
