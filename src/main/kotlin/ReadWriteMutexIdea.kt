@@ -215,11 +215,54 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
     private val cqsReaders = ReadersCQS() // the place where readers should suspend and be resumed
     private val cqsWriters = WritersCQS() // the place where writers should suspend and be resumed
 
-    override suspend fun writeIntentLock() {}
+    override suspend fun writeIntentLock() = readLock()
 
-    override fun writeIntentUnlock() {}
+    override fun writeIntentUnlock() = readUnlock()
 
-    override suspend fun upgradeWriteIntentToWriteLock() {}
+    override suspend fun upgradeWriteIntentToWriteLock() {
+        while (true) {
+            val s = state.value
+            // Are we the last active reader?
+            if (!s.rwr && s.ar == 1) {
+                if (s.ww == 0) {
+                    // There are no waiting writers.
+                    // Try to acquire the writer lock, re-try the operation if this CAS fails.
+                    if (state.compareAndSet(s, state(0, true, 0, false, s.iwla)))
+                        return
+                }
+                else {
+                    // There are waiting writers to be resumed. Resume one of them and suspend.
+                    if (state.compareAndSet(s, state(s.ar - 1, true, s.ww, s.rwr, s.iwla))) {
+                        cqsWriters.resume(true)
+                        val acquired: Boolean = suspendCancellableCoroutineReusable { cont ->
+                            if (!cqsWriters.suspend(cont as Waiter)) {
+                                cont.resume(false)
+                            }
+                        }
+                        if (acquired) {
+                            return
+                        }
+                        assert { false } // assumes that suspend never fails
+                    }
+                }
+            }
+            else {
+                // The lock cannot be acquired immediately, and this operation has to suspend.
+                // Try to increment the number of waiting writers and suspend in `cqsWriters`.
+                if (state.compareAndSet(s, state(s.ar - 1, s.wla, s.ww + 1, s.rwr, s.iwla))) {
+                    val acquired: Boolean = suspendCancellableCoroutineReusable { cont ->
+                        if (!cqsWriters.suspend(cont as Waiter)) {
+                            cont.resume(false)
+                        }
+                    }
+                    if (acquired) {
+                        return
+                    }
+                    assert {false} // assumes that suspend never fails
+                }
+            }
+        }
+    }
 
     @ExperimentalCoroutinesApi
     override val write: Mutex get() = this // we do not create an extra object this way.
