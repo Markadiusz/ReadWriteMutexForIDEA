@@ -18,27 +18,27 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
     private val m = ReadWriteMutexIdeaImpl()
     private val readLockAcquired = IntArray(6)
     private val writeLockAcquired = BooleanArray(6)
-    private val intentWriteLockAcquired = IntArray(6)
+    private val intentWriteLockAcquired = BooleanArray(6)
 
     @Operation(allowExtraSuspension = true, promptCancellation = false)
     suspend fun writeIntentLock(@Param(gen = ThreadIdGen::class) threadId: Int) {
         m.writeIntentLock()
-        intentWriteLockAcquired[threadId]++
+        intentWriteLockAcquired[threadId] = true
     }
 
     @Operation
     fun writeIntentUnlock(@Param(gen = ThreadIdGen::class) threadId: Int): Boolean {
-        if (intentWriteLockAcquired[threadId] == 0) return false
+        if (!intentWriteLockAcquired[threadId]) return false
         m.writeIntentUnlock()
-        intentWriteLockAcquired[threadId]--
+        intentWriteLockAcquired[threadId] = false
         return true
     }
 
     @Operation
     suspend fun upgradeWriteIntentToWriteLock(@Param(gen = ThreadIdGen::class) threadId: Int): Boolean {
-        if (intentWriteLockAcquired[threadId] != 1 || readLockAcquired[threadId] != 0) return false
+        if (!intentWriteLockAcquired[threadId] || readLockAcquired[threadId] != 0) return false
         m.upgradeWriteIntentToWriteLock()
-        intentWriteLockAcquired[threadId]--
+        intentWriteLockAcquired[threadId] = false
         writeLockAcquired[threadId] = true
         return true
     }
@@ -104,24 +104,24 @@ class ReadWriteMutexIdeaLincheckTestSequential {
     private val m = ReadWriteMutexIdeaSequential()
     private val readLockAcquired = IntArray(6)
     private val writeLockAcquired = BooleanArray(6)
-    private val intentWriteLockAcquired = IntArray(6)
+    private val intentWriteLockAcquired = BooleanArray(6)
 
     suspend fun writeIntentLock(threadId: Int) {
         m.writeIntentLock()
-        intentWriteLockAcquired[threadId]++
+        intentWriteLockAcquired[threadId] = true
     }
 
     fun writeIntentUnlock(threadId: Int): Boolean {
-        if (intentWriteLockAcquired[threadId] == 0) return false
+        if (!intentWriteLockAcquired[threadId]) return false
         m.writeIntentUnlock()
-        intentWriteLockAcquired[threadId]--
+        intentWriteLockAcquired[threadId] = false
         return true
     }
 
     suspend fun upgradeWriteIntentToWriteLock(threadId: Int): Boolean {
-        if (intentWriteLockAcquired[threadId] != 1 || readLockAcquired[threadId] != 0) return false
+        if (!intentWriteLockAcquired[threadId] || readLockAcquired[threadId] != 0) return false
         m.upgradeWriteIntentToWriteLock()
-        intentWriteLockAcquired[threadId]--
+        intentWriteLockAcquired[threadId] = false
         writeLockAcquired[threadId] = true
         return true
     }
@@ -165,34 +165,65 @@ internal class ReadWriteMutexIdeaSequential {
     private var ar = 0
     private var wla = false
     private val wr = ArrayList<CancellableContinuation<Unit>>()
-    private val ww = ArrayList<CancellableContinuation<Unit>>()
+    private val ww = ArrayList<Pair<CancellableContinuation<Unit>, Boolean>>() // (cont, isIntentLock)
+    private var iwla = false
 
-    suspend fun writeIntentLock() = readLock()
+    private fun tryResumingReaders() {
+        if (!wla && !iwla && ww.isNotEmpty() && ww[0].second) {
+            iwla = true
+            val w = ww.removeAt(0).first
+            w.resume(Unit) { writeIntentUnlock() }
+        }
+        if (!wla && ww.isEmpty()) {
+            ar += wr.size
+            wr.forEach { it.resume(Unit) { readUnlock() } }
+            wr.clear()
+        }
+    }
 
-    fun writeIntentUnlock() = readUnlock()
+    private fun resumeWriter() {
+        check(ww.isNotEmpty() && !ww[0].second)
+        val w = ww.removeAt(0).first
+        w.resume(Unit) { writeUnlock() }
+    }
+
+    suspend fun writeIntentLock() {
+        if (wla || iwla || ww.isNotEmpty()) {
+            suspendCancellableCoroutine<Unit> { cont ->
+                ww += Pair(cont, true)
+                cont.invokeOnCancellation {
+                    ww -= Pair(cont, true)
+                    tryResumingReaders()
+                }
+            }
+        } else {
+            iwla = true
+        }
+    }
+
+    fun writeIntentUnlock() {
+        iwla = false
+        if (ar == 0 && ww.isNotEmpty() && !ww[0].second) {
+            wla = true
+            resumeWriter()
+        }
+        else {
+            tryResumingReaders()
+        }
+    }
 
     suspend fun upgradeWriteIntentToWriteLock() {
-        if (ar > 1 || ww.isNotEmpty()) {
-            ar--
-            if (ar == 0) {
-                wla = true
-                val w = ww.removeAt(0)
-                w.resume(Unit) { writeUnlock() }
-            }
+        iwla = false
+        if (ar > 0) {
             suspendCancellableCoroutine<Unit> { cont ->
-                ww += cont
+                ww.add(0, Pair(cont, false))
                 cont.invokeOnCancellation {
-                    ww -= cont
-                    if (!wla && ww.isEmpty()) {
-                        ar += wr.size
-                        wr.forEach { it.resume(Unit) { readUnlock() } }
-                        wr.clear()
-                    }
+                    ww -= Pair(cont, false)
+                    tryResumingReaders()
                 }
             }
         }
         else {
-            ar = 0
             wla = true
         }
     }
@@ -216,30 +247,25 @@ internal class ReadWriteMutexIdeaSequential {
 
     fun readUnlock() {
         ar--
-        if (ar == 0 && ww.isNotEmpty()) {
+        if (ar == 0 && !iwla && ww.isNotEmpty()) {
             wla = true
-            val w = ww.removeAt(0)
-            w.resume(Unit) { writeUnlock() }
+            resumeWriter()
         }
     }
 
     fun tryWriteLock(): Boolean {
-        if (wla || ar > 0) return false
+        if (wla || iwla || ar > 0) return false
         wla = true
         return true
     }
 
     suspend fun writeLock() {
-        if (wla || ar > 0) {
+        if (wla || iwla || ar > 0) {
             suspendCancellableCoroutine<Unit> { cont ->
-                ww += cont
+                ww += Pair(cont, false)
                 cont.invokeOnCancellation {
-                    ww -= cont
-                    if (!wla && ww.isEmpty()) {
-                        ar += wr.size
-                        wr.forEach { it.resume(Unit) { readUnlock() } }
-                        wr.clear()
-                    }
+                    ww -= Pair(cont, false)
+                    tryResumingReaders()
                 }
             }
         } else {
@@ -248,14 +274,12 @@ internal class ReadWriteMutexIdeaSequential {
     }
 
     fun writeUnlock() {
-        if (ww.isNotEmpty()) {
-            val w = ww.removeAt(0)
-            w.resume(Unit) { writeUnlock() }
-        } else {
+        if (ww.isNotEmpty() && !ww[0].second) {
+            resumeWriter()
+        }
+        else {
             wla = false
-            ar = wr.size
-            wr.forEach { it.resume(Unit) { readUnlock() } }
-            wr.clear()
+            tryResumingReaders()
         }
     }
 }
