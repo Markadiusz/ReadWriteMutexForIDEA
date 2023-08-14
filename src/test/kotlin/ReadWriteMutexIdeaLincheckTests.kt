@@ -14,6 +14,7 @@ import org.jetbrains.kotlinx.lincheck.paramgen.*
 import org.jetbrains.kotlinx.lincheck.strategy.managed.modelchecking.*
 import org.jetbrains.kotlinx.lincheck.verifier.*
 import rwmutex.ReadWriteMutexIdeaImpl.UnlockPolicy.*
+import kotlin.coroutines.*
 
 class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
     private val m = ReadWriteMutexIdeaImpl()
@@ -21,13 +22,13 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
     private val writeLockAcquired = BooleanArray(6)
     private val intentWriteLockAcquired = BooleanArray(6)
 
-    @Operation(allowExtraSuspension = true, promptCancellation = false)
+    @Operation(allowExtraSuspension = true, promptCancellation = false, nonParallelGroup = "writer")
     suspend fun writeIntentLock(@Param(gen = ThreadIdGen::class) threadId: Int) {
         m.writeIntentLock()
         intentWriteLockAcquired[threadId] = true
     }
 
-    @Operation
+    @Operation(nonParallelGroup = "writer")
     fun writeIntentUnlock(@Param(gen = ThreadIdGen::class) threadId: Int, prioritizeWriters: Boolean): Boolean {
         if (!intentWriteLockAcquired[threadId]) return false
         m.writeIntentUnlock(if (prioritizeWriters) PRIORITIZE_WRITERS else PRIORITIZE_INTENT)
@@ -35,7 +36,7 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
         return true
     }
 
-    @Operation
+    @Operation(nonParallelGroup = "writer")
     suspend fun upgradeWriteIntentToWriteLock(@Param(gen = ThreadIdGen::class) threadId: Int): Boolean {
         if (!intentWriteLockAcquired[threadId] || readLockAcquired[threadId] != 0) return false
         m.upgradeWriteIntentToWriteLock()
@@ -174,7 +175,7 @@ internal class ReadWriteMutexIdeaSequential {
     private var upgradingThread: CancellableContinuation<Unit>? = null
 
     // 'Readers' refers to normal readers and to threads that called writeIntent, but haven't upgraded to a writer yet.
-    private fun tryResumingReaders() {
+    private fun tryResumeReadersAndFirstWriteIntent() {
         // Resumes a waiting writeIntentLock
         // if neither of the write(Intent) locks is acquired and there are no waiting writers.
         if (!wla && !iwla && ww.isEmpty() && wi.isNotEmpty()) {
@@ -201,7 +202,7 @@ internal class ReadWriteMutexIdeaSequential {
     suspend fun writeIntentLock() {
         // Is either of the write(Intent) locks acquired or are there waiting writers?
         if (wla || iwla || ww.isNotEmpty()) {
-            suspendCancellableCoroutine<Unit> { cont ->
+            suspendCancellableCoroutine { cont ->
                 wi += cont
                 cont.invokeOnCancellation { wi -= cont }
             }
@@ -219,7 +220,7 @@ internal class ReadWriteMutexIdeaSequential {
             resumeWriter()
         }
         else {
-            tryResumingReaders()
+            tryResumeReadersAndFirstWriteIntent()
         }
     }
 
@@ -231,7 +232,7 @@ internal class ReadWriteMutexIdeaSequential {
                 cont.invokeOnCancellation {
                     upgradingThread = null
                     iwla = false
-                    tryResumingReaders()
+                    tryResumeReadersAndFirstWriteIntent()
                 }
             }
         }
@@ -266,16 +267,14 @@ internal class ReadWriteMutexIdeaSequential {
     fun readUnlock() {
         ar--
         if (ar == 0) {
+            // Is there a "write-intent" lock upgrading to the "write" lock?
             if (upgradingThread != null) {
                 iwla = false
                 wla = true
                 val cont: CancellableContinuation<Unit> = upgradingThread!!
                 upgradingThread = null
-                cont.resume(Unit) {
-                    writeUnlock(false)
-                }
-            }
-            else if (!iwla && ww.isNotEmpty()) {
+                cont.resume(Unit)
+            } else if (!iwla && ww.isNotEmpty()) {
                 wla = true
                 resumeWriter()
             }
@@ -295,12 +294,12 @@ internal class ReadWriteMutexIdeaSequential {
     suspend fun writeLock() {
         // Is either of the write(Intent) locks is acquired or are there active readers?
         if (wla || iwla || ar > 0) {
-            suspendCancellableCoroutine<Unit> { cont ->
+            suspendCancellableCoroutine { cont ->
                 ww += cont
                 cont.invokeOnCancellation {
                     ww -= cont
                     // Resumes a waiting writeIntent if iwla is false and we were the last waiting writer.
-                    tryResumingReaders()
+                    if (ww.isEmpty()) tryResumeReadersAndFirstWriteIntent()
                 }
             }
         } else {
@@ -313,10 +312,9 @@ internal class ReadWriteMutexIdeaSequential {
         // Are there waiting writers?
         if (ww.isNotEmpty() && (prioritizeWriters || wi.isEmpty())) {
             resumeWriter()
-        }
-        else {
+        } else {
             wla = false
-            tryResumingReaders()
+            tryResumeReadersAndFirstWriteIntent()
         }
     }
 }
