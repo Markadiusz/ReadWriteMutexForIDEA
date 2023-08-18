@@ -66,7 +66,7 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
         return true
     }
 
-    @Operation(allowExtraSuspension = true, promptCancellation = false)
+    @Operation(allowExtraSuspension = true, promptCancellation = false, nonParallelGroup = "writer")
     suspend fun writeLock(@Param(gen = ThreadIdGen::class) threadId: Int) {
         m.writeLock()
         assert(!writeLockAcquired[threadId]) {
