@@ -28,7 +28,7 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
         intentWriteLockAcquired[threadId] = true
     }
 
-    @Operation(nonParallelGroup = "writer")
+    //@Operation(nonParallelGroup = "writer")
     fun writeIntentUnlock(@Param(gen = ThreadIdGen::class) threadId: Int, prioritizeWriters: Boolean): Boolean {
         if (!intentWriteLockAcquired[threadId]) return false
         m.writeIntentUnlock(if (prioritizeWriters) PRIORITIZE_WRITERS else PRIORITIZE_INTENT)
@@ -36,7 +36,7 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
         return true
     }
 
-    @Operation(nonParallelGroup = "writer")
+    //@Operation(nonParallelGroup = "writer")
     suspend fun upgradeWriteIntentToWriteLock(@Param(gen = ThreadIdGen::class) threadId: Int): Boolean {
         if (!intentWriteLockAcquired[threadId] || readLockAcquired[threadId] != 0) return false
         m.upgradeWriteIntentToWriteLock()
@@ -66,7 +66,7 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
         return true
     }
 
-    @Operation(allowExtraSuspension = true, promptCancellation = false, nonParallelGroup = "writer")
+    @Operation(allowExtraSuspension = true, promptCancellation = false)
     suspend fun writeLock(@Param(gen = ThreadIdGen::class) threadId: Int) {
         m.writeLock()
         assert(!writeLockAcquired[threadId]) {

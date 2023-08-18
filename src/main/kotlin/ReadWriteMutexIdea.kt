@@ -222,8 +222,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         while (true) {
             val s = state.value
             // Is there an active writer (the WLA flag is set) or is the intentLock acquired (the IWLA flag is set)?
-            if (!s.wla && !s.iwla) {
-                assert { s.ww == 0 }
+            if (!s.wla && !s.iwla && s.ww == 0) {
                 assert { !s.wi }
                 // Try to acquire the writeIntent lock, re-try the operation if this CAS fails.
                 if (state.compareAndSet(s, state(s.ar, false, 0, s.rwr, true, false)))
@@ -542,7 +541,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             val s = state.value
             // Is there an active writer (the WLA flag is set), a concurrent `writeUnlock` operation,
             // which is releasing readers now (the RWR flag is set), or an active reader (AR >= 1)?
-            if (!s.wla && !s.rwr && s.ar == 0) {
+            if (!s.wla && !s.rwr && s.ar == 0 && !s.iwla) {
                 // Try to acquire the writer lock, re-try the operation if this CAS fails.
                 assert { s.ww == 0 }
                 if (state.compareAndSet(s, state(0, true, 0, false, s.iwla, s.wi)))
@@ -597,8 +596,10 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             } else if (resumeIntent) {
                 // Resume the next write intent - try to decrement the number of waiting
                 // write intents and resume the first one in `cqsIntent` on success.
-                if (state.compareAndSet(s, state(0, false, s.ww, false, true, false))) {
+                // Resume waiting readers.
+                if (state.compareAndSet(s, state(0, false, s.ww, true, true, false))) {
                     if (cqsIntent.resume(true)) {
+                        completeWaitingReadersResumption()
                         return
                     }
                     assert {false} // assumes that resume never fails
@@ -651,13 +652,25 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         // and resume the next waiting writer in this case (if there exists one).
         var resumeWriter = false
         state.getAndUpdate { s ->
-            resumeWriter = s.ar == 0 && s.ww > 0
+            resumeWriter = s.ar == 0 && s.ww > 0 && !s.iwla
             val wwUpd = if (resumeWriter) s.ww - 1 else s.ww
             state(s.ar, resumeWriter, wwUpd, false, s.iwla, s.wi)
         }
         if (resumeWriter) {
             // Resume the next writer physically and finish
             cqsWriters.resume(true)
+            return
+        }
+        // Just as above, we might need to resume a waiting write intent.
+        var resumeIntent = false
+        state.getAndUpdate { s ->
+            resumeIntent = !s.wla && !s.iwla && s.wi
+            val wiUpd = if (resumeIntent) false else s.wi
+            state(s.ar, s.wla, s.ww, s.rwr, resumeIntent || s.iwla, wiUpd)
+        }
+        if (resumeIntent) {
+            // Resume the next write intent physically and finish
+            cqsIntent.resume(true)
             return
         }
         // Meanwhile, it could be possible for a writer to come and suspend due to the `RWR` flag.
