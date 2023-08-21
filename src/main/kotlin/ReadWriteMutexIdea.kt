@@ -277,7 +277,30 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         }
     }
 
-    override suspend fun upgradeWriteIntentToWriteLock() {}
+    override suspend fun upgradeWriteIntentToWriteLock() {
+        while (true) {
+            val s = state.value
+            assert { s.iwla }
+            assert { !s.wla }
+            if (s.ar == 0 && !s.rwr) {
+                // There are no active or incoming readers.
+                // Try to acquire the write lock, re-try the operation if this CAS fails.
+                if (state.compareAndSet(s, state(s.ar, true, s.ww, s.rwr, false, s.wi)))
+                    return
+            }
+            else {
+                // Suspend in the upgradingThread cell and wait until all readers finish.
+                suspendCancellableCoroutineReusable { cont ->
+                    upgradingThread = cont
+                    cont.invokeOnCancellation {
+                        upgradingThread = null
+                        writeIntentUnlock()
+                    }
+                }
+                return
+            }
+        }
+    }
 
     /**
      * This customization of [CancellableQueueSynchronizer] for waiting write intents
