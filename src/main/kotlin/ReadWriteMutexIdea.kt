@@ -246,7 +246,36 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
 
     override fun writeIntentUnlock() = writeIntentUnlock(ROUND_ROBIN)
 
-    internal fun writeIntentUnlock(policy: UnlockPolicy) {}
+    internal fun writeIntentUnlock(policy: UnlockPolicy) {
+        while (true) {
+            val s = state.value
+            if (s.ar == 0 && !s.rwr && s.ww > 0 && (policy != PRIORITIZE_INTENT || !s.wi)) {
+                // There are no active or incoming readers and we should resume a writer.
+                if (state.compareAndSet(s, state(s.ar, true, s.ww - 1, s.rwr, false, s.wi))) {
+                    cqsWriters.resume(true)
+                    return
+                }
+                // CAS failed => the state has changed.
+                // Re-read it and try to release the writeIntent lock again.
+            }
+            else if (s.wi) {
+                // We should resume a write intent.
+                if (state.compareAndSet(s, state(s.ar, s.wla, s.ww, s.rwr, true, s.wi))) {
+                    cqsIntent.resume(true)
+                    return
+                }
+                // CAS failed => the state has changed.
+                // Re-read it and try to release the writeIntent lock again.
+            }
+            else {
+                // There is nobody to be resumed. We just release the writeIntent lock.
+                if (state.compareAndSet(s, state(s.ar, s.wla, s.ww, s.rwr, false, s.wi)))
+                    return
+                // CAS failed => the state has changed.
+                // Re-read it and try to release the writeIntent lock again.
+            }
+        }
+    }
 
     override suspend fun upgradeWriteIntentToWriteLock() {}
 
@@ -598,8 +627,8 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 // write intents and resume the first one in `cqsIntent` on success.
                 // Resume waiting readers.
                 if (state.compareAndSet(s, state(0, false, s.ww, true, true, false))) {
+                    completeWaitingReadersResumption()
                     if (cqsIntent.resume(true)) {
-                        completeWaitingReadersResumption()
                         return
                     }
                     assert {false} // assumes that resume never fails
