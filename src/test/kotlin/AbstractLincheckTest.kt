@@ -16,20 +16,20 @@ abstract class AbstractLincheckTest {
 
     @Test
     fun modelCheckingTest() = ModelCheckingOptions()
-        .invocationsPerIteration(10_000)
+        .invocationsPerIteration(20_000)
         .commonConfiguration()
         .customize()
         .check(this::class)
 
     @Test
     fun stressTest() = StressOptions()
-        .invocationsPerIteration(10_000)
+        .invocationsPerIteration(20_000)
         .commonConfiguration()
         .customize()
         .check(this::class)
 
     private fun <O : Options<O, *>> O.commonConfiguration(): O = this
-        .iterations(100)
+        .iterations(500)
         .actorsBefore(2)
         .threads(3)
         .actorsPerThread(3)
