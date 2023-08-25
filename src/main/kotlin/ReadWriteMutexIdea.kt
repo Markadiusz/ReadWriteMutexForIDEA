@@ -246,7 +246,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
 
     override fun writeIntentUnlock() = writeIntentUnlock(ROUND_ROBIN)
 
-    internal fun writeIntentUnlock(policy: UnlockPolicy) {
+    internal fun writeIntentUnlock(policy: UnlockPolicy, isCalledFromACancelledUpgradeWriteIntentToWriteLock: Boolean = false) {
         while (true) {
             val s = state.value
             if (s.ar == 0 && !s.rwr && s.ww > 0 && (policy != PRIORITIZE_INTENT || !s.wi)) {
@@ -260,7 +260,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             }
             else if (s.wi) {
                 // We should resume a write intent.
-                if (s.ww == 0) {
+                if (isCalledFromACancelledUpgradeWriteIntentToWriteLock && s.ww == 0) {
                     // There are no waiting writers. Resume waiting readers as well.
                     if (state.compareAndSet(s, state(s.ar, false, s.ww, true, true, s.wi, false))) {
                         completeWaitingReadersResumption()
@@ -281,12 +281,21 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 }
             }
             else {
-                // Try resuming waiting readers.
-                if (state.compareAndSet(s, state(s.ar, false, s.ww, true, false, s.wi, false)))
-                    completeWaitingReadersResumption()
+                if (isCalledFromACancelledUpgradeWriteIntentToWriteLock && s.ww == 0) {
+                    // There are no waiting writers. Resume waiting readers.
+                    if (state.compareAndSet(s, state(s.ar, false, s.ww, true, false, s.wi, false)))
+                        completeWaitingReadersResumption()
                     return
-                // CAS failed => the state has changed.
-                // Re-read it and try to release the writeIntent lock again.
+                    // CAS failed => the state has changed.
+                    // Re-read it and try to release the writeIntent lock again.
+                }
+                else {
+                    // There is nobody to be resumed. Just release the writeIntent lock.
+                    if (state.compareAndSet(s, state(s.ar, false, s.ww, s.rwr, false, s.wi, false)))
+                        return
+                    // CAS failed => the state has changed.
+                    // Re-read it and try to release the writeIntent lock again.
+                }
             }
         }
     }
@@ -309,7 +318,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                         upgradingThread = cont
                         cont.invokeOnCancellation {
                             upgradingThread = null
-                            writeIntentUnlock()
+                            writeIntentUnlock(ROUND_ROBIN, true)
                         }
                     }
                     return
@@ -795,7 +804,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 val s = state.value // Read the current state.
                 if (s.ww == 0) return false // Is this writer going to be resumed in `cqsWriters`?
                 // Is this writer the last one and is the readers resumption valid?
-                if (s.ww == 1 && !s.wla && !s.rwr) {
+                if (s.ww == 1 && !s.wla && !s.rwr && !s.upgr) {
                     // Set the `RWR` flag and resume the waiting readers.
                     // While it is possible that no reader is waiting for a lock, so that this CAS can be omitted,
                     // we do not add the corresponding code for simplicity since it does not improve the performance
