@@ -557,7 +557,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     // CAS failed => the state has changed.
                     // Re-read it and try to release the reader lock again.
                 }
-                // Check whether there is a waiting writer and resume it.
+                // Check whether there is a waiting writer that can be resumed.
                 // Otherwise, simply change the state and finish.
                 else if (!s.iwla && s.ww > 0) {
                     // Try to decrement the number of waiting writers and set the `WLA` flag.
@@ -567,9 +567,9 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                         return
                     }
                 } else {
-                    // There is no waiting writer according to the state.
+                    // There is no waiting writer that can be resumed.
                     // Try to clear the number of active readers and finish.
-                    if (state.compareAndSet(s, state(0, false, 0, false, s.iwla, s.wi, s.upgr)))
+                    if (state.compareAndSet(s, state(0, false, s.ww, false, s.iwla, s.wi, s.upgr)))
                         return
                 }
             } else {
