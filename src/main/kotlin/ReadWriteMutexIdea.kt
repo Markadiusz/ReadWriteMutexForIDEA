@@ -549,9 +549,9 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     if (cont === null) continue
                     // Unset the 'IWLA' flag and set the `WLA` flag.
                     // Resume the upgrading thread on success.
-                    if (state.compareAndSet(s, state(0, true, s.ww, false, false, s.wi, s.upgr))) {
+                    if (state.compareAndSet(s, state(0, true, s.ww, false, false, s.wi, false))) {
                         upgradingThread = null
-                        cont.resume(true) { /* writeUnlock() */ }
+                        cont.resume(true)
                         return
                     }
                     // CAS failed => the state has changed.
@@ -742,6 +742,27 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         // Similarly, it is possible that there were no waiting readers at all.
         // Therefore, in the end, we check whether the number of active readers is 0
         // and resume the next waiting writer in this case (if there exists one).
+        // Resume a suspended upgradingThread.
+        while (true) {
+            val s = state.value
+            if (s.upgr && s.ar == 0) {
+                val cont = upgradingThread
+                // Wait for the upgrading thread to suspend.
+                if (cont === null) continue
+                // Unset the 'IWLA' flag and set the `WLA` flag.
+                // Resume the upgrading thread on success.
+                if (state.compareAndSet(s, state(0, true, s.ww, false, false, s.wi, false))) {
+                    upgradingThread = null
+                    cont.resume(true)
+                    return
+                }
+                // CAS failed => the state has changed.
+                // Re-read it and try to release the reader lock again.
+            }
+            else break
+        }
+        // There isn't a suspended upgradingThread that can be resumed.
+        // Resume a waiting writer.
         var resumeWriter = false
         state.getAndUpdate { s ->
             resumeWriter = s.ar == 0 && s.ww > 0 && !s.iwla
