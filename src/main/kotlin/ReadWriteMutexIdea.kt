@@ -312,13 +312,15 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     return
             }
             else {
+                if (s.rwr) continue // TODO try to get rid of this waiting
                 if (state.compareAndSet(s, state(s.ar, s.wla, s.ww, s.rwr, s.iwla, s.wi, true))) {
                     // Suspend in the upgradingThread cell and wait until all readers finish.
                     suspendCancellableCoroutineReusable { cont ->
                         upgradingThread = cont
                         cont.invokeOnCancellation {
-                            upgradingThread = null
+                            // TODO think about the order of those two operations
                             writeIntentUnlock(ROUND_ROBIN, true)
+                            upgradingThread = null
                         }
                     }
                     return
