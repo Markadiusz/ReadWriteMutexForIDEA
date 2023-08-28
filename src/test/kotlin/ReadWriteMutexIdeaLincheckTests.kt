@@ -45,13 +45,13 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
         return true
     }
 
-    //@Operation(allowExtraSuspension = true, promptCancellation = false)
+    @Operation(allowExtraSuspension = true, promptCancellation = false)
     suspend fun readLock(@Param(gen = ThreadIdGen::class) threadId: Int) {
         m.readLock()
         readLockAcquired[threadId]++
     }
 
-    //@Operation
+    @Operation
     fun readUnlock(@Param(gen = ThreadIdGen::class) threadId: Int): Boolean {
         if (readLockAcquired[threadId] == 0) return false
         m.readUnlock()

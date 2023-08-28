@@ -283,9 +283,10 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             else {
                 if (isCalledFromACancelledUpgradeWriteIntentToWriteLock && s.ww == 0) {
                     // There are no waiting writers. Resume waiting readers.
-                    if (state.compareAndSet(s, state(s.ar, false, s.ww, true, false, s.wi, false)))
+                    if (state.compareAndSet(s, state(s.ar, false, s.ww, true, false, s.wi, false))) {
                         completeWaitingReadersResumption()
-                    return
+                        return
+                    }
                     // CAS failed => the state has changed.
                     // Re-read it and try to release the writeIntent lock again.
                 }
