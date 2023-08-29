@@ -15,6 +15,7 @@ import org.jetbrains.kotlinx.lincheck.strategy.managed.modelchecking.*
 import org.jetbrains.kotlinx.lincheck.verifier.*
 import rwmutex.ReadWriteMutexIdeaImpl.UnlockPolicy.*
 import kotlin.coroutines.*
+import org.junit.jupiter.api.*
 
 class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
     private val m = ReadWriteMutexIdeaImpl()
@@ -100,6 +101,30 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
 
     override fun ModelCheckingOptions.customize() =
         checkObstructionFreedom(false)
+
+    @Test
+    fun customModelCheckingTest() = ModelCheckingOptions()
+        .invocationsPerIteration(20_000)
+        .iterations(500)
+        .addCustomScenario {
+            parallel {
+                thread {
+                    actor(::writeIntentLock, 1)
+                    actor(::writeIntentLock, 1)
+                }
+                thread {
+                    actor(::writeLock, 2)
+                    actor(::writeUnlock, 2, true)
+                }
+                thread {
+                    actor(::writeLock, 3)
+                    actor(::readUnlock, 3)
+                }
+            }
+        }
+        .checkObstructionFreedom(false)
+        .sequentialSpecification(ReadWriteMutexIdeaLincheckTestSequential::class.java)
+        .check(this::class)
 }
 
 class ReadWriteMutexIdeaLincheckTestSequential {
@@ -170,6 +195,7 @@ internal class ReadWriteMutexIdeaSequential {
     private val wr = ArrayList<CancellableContinuation<Unit>>()
     private val ww = ArrayList<CancellableContinuation<Unit>>()
     private val wi = ArrayList<CancellableContinuation<Unit>>()
+
     // Stores a thread that suspended during a upgradeWriteIntentToWriteLock call.
     // iwla is set to true when upgradingThread isn't null.
     private var upgradingThread: CancellableContinuation<Unit>? = null
@@ -218,8 +244,7 @@ internal class ReadWriteMutexIdeaSequential {
         if (ar == 0 && ww.isNotEmpty() && (prioritizeWriters || wi.isEmpty())) {
             wla = true
             resumeWriter()
-        }
-        else {
+        } else {
             tryResumeReadersAndFirstWriteIntent()
         }
     }
@@ -235,8 +260,7 @@ internal class ReadWriteMutexIdeaSequential {
                     tryResumeReadersAndFirstWriteIntent()
                 }
             }
-        }
-        else {
+        } else {
             // We are free to acquire the write lock.
             iwla = false
             wla = true

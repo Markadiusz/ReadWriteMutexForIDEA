@@ -216,7 +216,8 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
     private val cqsReaders = ReadersCQS() // the place where readers should suspend and be resumed
     private val cqsWriters = WritersCQS() // the place where writers should suspend and be resumed
     private val cqsIntent = IntentCQS() // the place where write intents should suspend and be resumed
-    private var upgradingThread: CancellableContinuation<Boolean>? = null // the thread suspended in upgradeWriteIntentToWriteLock
+    private var upgradingThread: CancellableContinuation<Boolean>? =
+        null // the thread suspended in upgradeWriteIntentToWriteLock
 
     override suspend fun writeIntentLock() {
         while (true) {
@@ -227,8 +228,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 // Try to acquire the writeIntent lock, re-try the operation if this CAS fails.
                 if (state.compareAndSet(s, state(s.ar, false, 0, s.rwr, true, false, s.upgr)))
                     return
-            }
-            else {
+            } else {
                 if (state.compareAndSet(s, state(s.ar, s.wla, s.ww, s.rwr, s.iwla, true, s.upgr))) {
                     val acquired: Boolean = suspendCancellableCoroutineReusable { cont ->
                         if (!cqsIntent.suspend(cont as Waiter)) {
@@ -238,7 +238,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     if (acquired) {
                         return
                     }
-                    assert {false} // assumes that suspend never fails
+                    assert { false } // assumes that suspend never fails
                 }
             }
         }
@@ -246,7 +246,10 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
 
     override fun writeIntentUnlock() = writeIntentUnlock(ROUND_ROBIN)
 
-    internal fun writeIntentUnlock(policy: UnlockPolicy, isCalledFromACancelledUpgradeWriteIntentToWriteLock: Boolean = false) {
+    internal fun writeIntentUnlock(
+        policy: UnlockPolicy,
+        isCalledFromACancelledUpgradeWriteIntentToWriteLock: Boolean = false
+    ) {
         while (true) {
             val s = state.value
             if (s.ar == 0 && !s.rwr && s.ww > 0 && (policy != PRIORITIZE_INTENT || !s.wi)) {
@@ -257,8 +260,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 }
                 // CAS failed => the state has changed.
                 // Re-read it and try to release the writeIntent lock again.
-            }
-            else if (s.wi) {
+            } else if (s.wi) {
                 // We should resume a write intent.
                 if (isCalledFromACancelledUpgradeWriteIntentToWriteLock && s.ww == 0) {
                     // There are no waiting writers. Resume waiting readers as well.
@@ -269,8 +271,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     }
                     // CAS failed => the state has changed.
                     // Re-read it and try to release the writeIntent lock again.
-                }
-                else {
+                } else {
                     // There are waiting writers. Resume only a write intent.
                     if (state.compareAndSet(s, state(s.ar, false, s.ww, s.rwr, true, s.wi, false))) {
                         cqsIntent.resume(true)
@@ -279,8 +280,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     // CAS failed => the state has changed.
                     // Re-read it and try to release the writeIntent lock again.
                 }
-            }
-            else {
+            } else {
                 if (isCalledFromACancelledUpgradeWriteIntentToWriteLock && s.ww == 0) {
                     // There are no waiting writers. Resume waiting readers.
                     if (state.compareAndSet(s, state(s.ar, false, s.ww, true, false, s.wi, false))) {
@@ -289,8 +289,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     }
                     // CAS failed => the state has changed.
                     // Re-read it and try to release the writeIntent lock again.
-                }
-                else {
+                } else {
                     // There is nobody to be resumed. Just release the writeIntent lock.
                     if (state.compareAndSet(s, state(s.ar, false, s.ww, s.rwr, false, s.wi, false)))
                         return
@@ -311,8 +310,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 // Try to acquire the write lock, re-try the operation if this CAS fails.
                 if (state.compareAndSet(s, state(s.ar, true, s.ww, s.rwr, false, s.wi, s.upgr)))
                     return
-            }
-            else {
+            } else {
                 if (s.rwr) continue // TODO try to get rid of this waiting
                 if (state.compareAndSet(s, state(s.ar, s.wla, s.ww, s.rwr, s.iwla, s.wi, true))) {
                     // Suspend in the upgradingThread cell and wait until all readers finish.
@@ -387,6 +385,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             } else return false
         }*/
     }
+
     override suspend fun lock(owner: Any?) {
         if (owner != null) error("ReadWriteMutexIdea.write does not support owners")
         writeLock()
@@ -496,7 +495,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 }
                 if (acquired)
                     return
-                assert {false} // assumes that suspend never fails
+                assert { false } // assumes that suspend never fails
             } else {
                 // A race has been detected! The increment of the counter of
                 // waiting readers was wrong, try to decrement it back. However,
@@ -520,7 +519,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                         }
                         if (acquired)
                             return
-                        assert {false} // assumes that suspend never fails
+                        assert { false } // assumes that suspend never fails
                     }
                     // Otherwise, try to decrement the number of waiting
                     // readers and retry the operation from the beginning.
@@ -653,7 +652,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     if (acquired) {
                         return
                     }
-                    assert {false} // assumes that suspend never fails
+                    assert { false } // assumes that suspend never fails
                 }
             }
         }
@@ -686,7 +685,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     if (cqsWriters.resume(true)) {
                         return
                     }
-                    assert {false} // assumes that resume never fails
+                    assert { false } // assumes that resume never fails
                 }
             } else if (resumeIntent) {
                 // Resume the next write intent - try to decrement the number of waiting
@@ -697,7 +696,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     if (cqsIntent.resume(true)) {
                         return
                     }
-                    assert {false} // assumes that resume never fails
+                    assert { false } // assumes that resume never fails
                 }
             } else {
                 // Resume waiting readers. Reset the `WLA` flag and set the `RWR` flag atomically,
@@ -761,8 +760,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 }
                 // CAS failed => the state has changed.
                 // Re-read it and try to release the reader lock again.
-            }
-            else break
+            } else break
         }
         // There isn't a suspended upgradingThread that can be resumed.
         // Resume a waiting writer.
