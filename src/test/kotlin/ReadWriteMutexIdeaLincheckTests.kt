@@ -16,6 +16,7 @@ import org.jetbrains.kotlinx.lincheck.verifier.*
 import rwmutex.ReadWriteMutexIdeaImpl.UnlockPolicy.*
 import kotlin.coroutines.*
 import org.junit.jupiter.api.*
+import kotlin.reflect.jvm.*
 
 class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
     private val m = ReadWriteMutexIdeaImpl()
@@ -110,15 +111,12 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
             parallel {
                 thread {
                     actor(::writeIntentLock, 1)
-                    actor(::writeIntentLock, 1)
+                    Actor(::upgradeWriteIntentToWriteLock.javaMethod!!, listOf(1), false, true)
+                    actor(::writeIntentUnlock, 1, false)
                 }
                 thread {
                     actor(::writeLock, 2)
                     actor(::writeUnlock, 2, true)
-                }
-                thread {
-                    actor(::writeLock, 3)
-                    actor(::readUnlock, 3)
                 }
             }
         }

@@ -216,8 +216,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
     private val cqsReaders = ReadersCQS() // the place where readers should suspend and be resumed
     private val cqsWriters = WritersCQS() // the place where writers should suspend and be resumed
     private val cqsIntent = IntentCQS() // the place where write intents should suspend and be resumed
-    private var upgradingThread: CancellableContinuation<Boolean>? =
-        null // the thread suspended in upgradeWriteIntentToWriteLock
+    private val cqsUpgrade = UpgradeCQS() // the place where the upgrading thread should suspend and be resumed
 
     override suspend fun writeIntentLock() {
         while (true) {
@@ -247,8 +246,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
     override fun writeIntentUnlock() = writeIntentUnlock(ROUND_ROBIN)
 
     internal fun writeIntentUnlock(
-        policy: UnlockPolicy,
-        isCalledFromACancelledUpgradeWriteIntentToWriteLock: Boolean = false
+        policy: UnlockPolicy
     ) {
         while (true) {
             val s = state.value
@@ -262,40 +260,18 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 // Re-read it and try to release the writeIntent lock again.
             } else if (s.wi) {
                 // We should resume a write intent.
-                if (isCalledFromACancelledUpgradeWriteIntentToWriteLock && s.ww == 0) {
-                    // There are no waiting writers. Resume waiting readers as well.
-                    if (state.compareAndSet(s, state(s.ar, false, s.ww, true, true, s.wi, false))) {
-                        completeWaitingReadersResumption()
-                        cqsIntent.resume(true)
-                        return
-                    }
-                    // CAS failed => the state has changed.
-                    // Re-read it and try to release the writeIntent lock again.
-                } else {
-                    // There are waiting writers. Resume only a write intent.
-                    if (state.compareAndSet(s, state(s.ar, false, s.ww, s.rwr, true, s.wi, false))) {
-                        cqsIntent.resume(true)
-                        return
-                    }
-                    // CAS failed => the state has changed.
-                    // Re-read it and try to release the writeIntent lock again.
+                if (state.compareAndSet(s, state(s.ar, false, s.ww, s.rwr, true, s.wi, false))) {
+                    cqsIntent.resume(true)
+                    return
                 }
+                // CAS failed => the state has changed.
+                // Re-read it and try to release the writeIntent lock again.
             } else {
-                if (isCalledFromACancelledUpgradeWriteIntentToWriteLock && s.ww == 0) {
-                    // There are no waiting writers. Resume waiting readers.
-                    if (state.compareAndSet(s, state(s.ar, false, s.ww, true, false, s.wi, false))) {
-                        completeWaitingReadersResumption()
-                        return
-                    }
-                    // CAS failed => the state has changed.
-                    // Re-read it and try to release the writeIntent lock again.
-                } else {
-                    // There is nobody to be resumed. Just release the writeIntent lock.
-                    if (state.compareAndSet(s, state(s.ar, false, s.ww, s.rwr, false, s.wi, false)))
-                        return
-                    // CAS failed => the state has changed.
-                    // Re-read it and try to release the writeIntent lock again.
-                }
+                // There is nobody to be resumed. Just release the writeIntent lock.
+                if (state.compareAndSet(s, state(s.ar, false, s.ww, s.rwr, false, s.wi, false)))
+                    return
+                // CAS failed => the state has changed.
+                // Re-read it and try to release the writeIntent lock again.
             }
         }
     }
@@ -311,15 +287,12 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 if (state.compareAndSet(s, state(s.ar, true, s.ww, s.rwr, false, s.wi, s.upgr)))
                     return
             } else {
-                if (s.rwr) continue // TODO try to get rid of this waiting
+                //if (s.rwr) continue // TODO try to get rid of this waiting
                 if (state.compareAndSet(s, state(s.ar, s.wla, s.ww, s.rwr, s.iwla, s.wi, true))) {
-                    // Suspend in the upgradingThread cell and wait until all readers finish.
+                    // Suspend and wait until all readers finish.
                     suspendCancellableCoroutineReusable { cont ->
-                        upgradingThread = cont
-                        cont.invokeOnCancellation {
-                            // TODO think about the order of those two operations
-                            writeIntentUnlock(ROUND_ROBIN, true)
-                            upgradingThread = null
+                        if (!cqsUpgrade.suspend(cont as Waiter)) {
+                            cont.resume(false)
                         }
                     }
                     return
@@ -362,6 +335,81 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         // Returns the writeIntent lock back to the mutex.
         // This function is also used for prompt cancellation.
         override fun returnValue(value: Boolean) = writeIntentUnlock()
+    }
+
+    /**
+     * This customization of [CancellableQueueSynchronizer] for a waiting upgrading thread
+     * use the asynchronous resumption mode and smart cancellation mode,
+     * so neither [suspend] nor [resume] fail.
+     */
+    private inner class UpgradeCQS : CancellableQueueSynchronizer<Boolean>() {
+        override val resumeMode get() = ASYNC
+        override val cancellationMode get() = SMART
+
+        override fun onCancellation(): Boolean {
+            while (true) {
+                // First, read the current upgradinThread value.
+                val s = state.value
+                // Check whether it is already unset -- in this
+                // case a concurrent `readUnlock()` will invoke `resume()`
+                // for this cancelled operation eventually, so `onCancellation()`
+                // should return `false` to refuse the granted lock.
+                if (!s.upgr) return false
+                if (s.ar == 0 && !s.rwr && s.ww > 0) {
+                    // There are no active or incoming readers and we should resume a writer.
+                    if (state.compareAndSet(s, state(s.ar, true, s.ww - 1, s.rwr, false, s.wi, false))) {
+                        cqsWriters.resume(true)
+                        return true
+                    }
+                    // CAS failed => the state has changed.
+                    // Re-read it and try to release the writeIntent lock again.
+                } else if (s.wi) {
+                    // We should resume a write intent.
+                    if (s.ww == 0 && !s.rwr) {
+                        // There are no waiting writers. Resume waiting readers as well.
+                        if (state.compareAndSet(s, state(s.ar, false, s.ww, true, true, s.wi, false))) {
+                            completeWaitingReadersResumption()
+                            cqsIntent.resume(true)
+                            return true
+                        }
+                        // CAS failed => the state has changed.
+                        // Re-read it and try to release the writeIntent lock again.
+                    } else {
+                        // There are waiting writers. Resume only a write intent.
+                        if (state.compareAndSet(s, state(s.ar, false, s.ww, s.rwr, true, s.wi, false))) {
+                            cqsIntent.resume(true)
+                            return true
+                        }
+                        // CAS failed => the state has changed.
+                        // Re-read it and try to release the writeIntent lock again.
+                    }
+                } else {
+                    if (s.ww == 0 && !s.rwr) {
+                        // There are no waiting writers. Resume waiting readers.
+                        if (state.compareAndSet(s, state(s.ar, false, s.ww, true, false, s.wi, false))) {
+                            completeWaitingReadersResumption()
+                            return true
+                        }
+                        // CAS failed => the state has changed.
+                        // Re-read it and try to release the writeIntent lock again.
+                    } else {
+                        // There is nobody to be resumed. Just release the writeIntent lock.
+                        if (state.compareAndSet(s, state(s.ar, false, s.ww, s.rwr, false, s.wi, false)))
+                            return true
+                        // CAS failed => the state has changed.
+                        // Re-read it and try to release the writeIntent lock again.
+                    }
+                }
+            }
+        }
+
+        // When `onCancellation()` fails, the state keeps unchanged. Therefore,
+        // the writeIntent lock should be returned back to the mutex in `returnValue(..)`.
+        override fun tryReturnRefusedValue(value: Boolean) = false
+
+        // Returns the writeIntent lock back to the mutex.
+        // This function is also used for prompt cancellation.
+        override fun returnValue(value: Boolean) = writeUnlock()
     }
 
     @ExperimentalCoroutinesApi
@@ -546,14 +594,10 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             if (s.ar == 1 && !s.rwr) {
                 // Check whether there is an upgrading thread and resume it.
                 if (s.upgr) {
-                    val cont = upgradingThread
-                    // Wait for the upgrading thread to suspend.
-                    if (cont === null) continue
                     // Unset the 'IWLA' flag and set the `WLA` flag.
                     // Resume the upgrading thread on success.
                     if (state.compareAndSet(s, state(0, true, s.ww, false, false, s.wi, false))) {
-                        upgradingThread = null
-                        cont.resume(true)
+                        cqsUpgrade.resume(true)
                         return
                     }
                     // CAS failed => the state has changed.
@@ -744,43 +788,37 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         // Similarly, it is possible that there were no waiting readers at all.
         // Therefore, in the end, we check whether the number of active readers is 0
         // and resume the next waiting writer in this case (if there exists one).
-        // Resume a suspended upgradingThread.
-        while (true) {
-            val s = state.value
-            if (s.upgr && s.ar == 0) {
-                val cont = upgradingThread
-                // Wait for the upgrading thread to suspend.
-                if (cont === null) continue
-                // Unset the 'IWLA' flag and set the `WLA` flag.
-                // Resume the upgrading thread on success.
-                if (state.compareAndSet(s, state(0, true, s.ww, false, false, s.wi, false))) {
-                    upgradingThread = null
-                    cont.resume(true)
-                    return
-                }
-                // CAS failed => the state has changed.
-                // Re-read it and try to release the reader lock again.
-            } else break
-        }
-        // There isn't a suspended upgradingThread that can be resumed.
-        // Resume a waiting writer.
+        // Resume a suspended upgrading thread or a waiting writer.
+        var resumeUpgrade = false
         var resumeWriter = false
         state.getAndUpdate { s ->
-            resumeWriter = s.ar == 0 && s.ww > 0 && !s.iwla
-            val wwUpd = if (resumeWriter) s.ww - 1 else s.ww
-            state(s.ar, resumeWriter, wwUpd, false, s.iwla, s.wi, s.upgr)
+            if (s.upgr && s.ar == 0) {
+                resumeUpgrade = true
+                state(0, true, s.ww, false, false, s.wi, false)
+            } else {
+                resumeWriter = s.ar == 0 && s.ww > 0 && !s.iwla
+                val wwUpd = if (resumeWriter) s.ww - 1 else s.ww
+                state(s.ar, resumeWriter, wwUpd, false, s.iwla, s.wi, s.upgr)
+            }
+        }
+        if (resumeUpgrade) {
+            // Resume the upgrading thread physically and finish
+            cqsUpgrade.resume(true)
+            return
         }
         if (resumeWriter) {
             // Resume the next writer physically and finish
             cqsWriters.resume(true)
             return
         }
-        // Just as above, we might need to resume a waiting write intent.
+        // We might need to resume a waiting write intent,
+        // if it was suspended by the presence of a waiting writer.
         var resumeIntent = false
         state.getAndUpdate { s ->
             resumeIntent = !s.wla && !s.iwla && s.wi
             val wiUpd = if (resumeIntent) false else s.wi
-            state(s.ar, s.wla, s.ww, s.rwr, resumeIntent || s.iwla, wiUpd, s.upgr)
+            val iwlaUpd = s.iwla || resumeIntent
+            state(s.ar, s.wla, s.ww, s.rwr, iwlaUpd, wiUpd, s.upgr)
         }
         if (resumeIntent) {
             // Resume the next write intent physically and finish
@@ -864,7 +902,8 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     ",rwr=${state.value.rwr}" +
                     ",iwla=${state.value.iwla}" + ",wi=${state.value.wi}" +
                     ",upgr=${state.value.upgr}" +
-                    ",cqs_r={$cqsReaders},cqs_w={$cqsWriters},cqs_i={$cqsIntent}>"
+                    ",cqs_r={$cqsReaders},cqs_w={$cqsWriters}" +
+                    ",cqs_i={$cqsIntent},cqs_u={$cqsUpgrade}>"
 
     internal enum class UnlockPolicy { PRIORITIZE_INTENT, PRIORITIZE_WRITERS, ROUND_ROBIN }
 }
