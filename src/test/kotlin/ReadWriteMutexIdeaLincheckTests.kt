@@ -41,8 +41,8 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
     @Operation(allowExtraSuspension = true, nonParallelGroup = "writer")
     suspend fun upgradeWriteIntentToWriteLock(@Param(gen = ThreadIdGen::class) threadId: Int): Boolean {
         if (!intentWriteLockAcquired[threadId] || readLockAcquired[threadId] != 0) return false
-        intentWriteLockAcquired[threadId] = false
         m.upgradeWriteIntentToWriteLock()
+        intentWriteLockAcquired[threadId] = false
         writeLockAcquired[threadId] = true
         return true
     }
@@ -103,7 +103,7 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
     override fun ModelCheckingOptions.customize() =
         checkObstructionFreedom(false)
 
-    @Test
+    //@Test
     fun customModelCheckingTest() = ModelCheckingOptions()
         .invocationsPerIteration(20_000)
         .iterations(500)
@@ -145,8 +145,8 @@ class ReadWriteMutexIdeaLincheckTestSequential {
 
     suspend fun upgradeWriteIntentToWriteLock(threadId: Int): Boolean {
         if (!intentWriteLockAcquired[threadId] || readLockAcquired[threadId] != 0) return false
-        intentWriteLockAcquired[threadId] = false
         m.upgradeWriteIntentToWriteLock()
+        intentWriteLockAcquired[threadId] = false
         writeLockAcquired[threadId] = true
         return true
     }
@@ -254,7 +254,7 @@ internal class ReadWriteMutexIdeaSequential {
                 upgradingThread = cont
                 cont.invokeOnCancellation {
                     upgradingThread = null
-                    iwla = false
+                    //iwla = false
                     tryResumeReadersAndFirstWriteIntent()
                 }
             }

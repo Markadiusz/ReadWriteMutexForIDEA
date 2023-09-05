@@ -355,6 +355,22 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 // for this cancelled operation eventually, so `onCancellation()`
                 // should return `false` to refuse the granted lock.
                 if (!s.upgr) return false
+                if (s.ww == 0 && !s.rwr) {
+                    // There are no waiting writers. Resume waiting readers.
+                    if (state.compareAndSet(s, state(s.ar, false, s.ww, true, true, s.wi, false))) {
+                        completeWaitingReadersResumption()
+                        return true
+                    }
+                    // CAS failed => the state has changed.
+                    // Re-read it and try to release the writeIntent lock again.
+                } else {
+                    // There is nobody to be resumed. Just unset the UPGR bit.
+                    if (state.compareAndSet(s, state(s.ar, false, s.ww, s.rwr, true, s.wi, false)))
+                        return true
+                    // CAS failed => the state has changed.
+                    // Re-read it and try to release the writeIntent lock again.
+                }
+                /*
                 if (s.ar == 0 && !s.rwr && s.ww > 0) {
                     // There are no active or incoming readers and we should resume a writer.
                     if (state.compareAndSet(s, state(s.ar, true, s.ww - 1, s.rwr, false, s.wi, false))) {
@@ -400,6 +416,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                         // Re-read it and try to release the writeIntent lock again.
                     }
                 }
+                */
             }
         }
 
@@ -409,7 +426,15 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
 
         // Returns the writeIntent lock back to the mutex.
         // This function is also used for prompt cancellation.
-        override fun returnValue(value: Boolean) = writeUnlock()
+        override fun returnValue(value: Boolean) {
+            var resumeReaders = false
+            state.getAndUpdate { s ->
+                resumeReaders = !s.rwr && s.ww == 0
+                state(s.ar, false, s.ww, resumeReaders, true, s.wi, false)
+            }
+            if (resumeReaders)
+                completeWaitingReadersResumption()
+        }
     }
 
     @ExperimentalCoroutinesApi
