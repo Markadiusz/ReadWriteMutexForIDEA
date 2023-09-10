@@ -4,11 +4,14 @@
 @file:Suppress("unused")
 @file:OptIn(ExperimentalCoroutinesApi::class)
 
-import kotlinx.coroutines.*
-import org.jetbrains.kotlinx.lincheck.*
-import org.jetbrains.kotlinx.lincheck.annotations.*
-import org.jetbrains.kotlinx.lincheck.paramgen.*
-import kotlin.coroutines.*
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.suspendCancellableCoroutine
+import org.jetbrains.kotlinx.lincheck.Options
+import org.jetbrains.kotlinx.lincheck.annotations.Operation
+import org.jetbrains.kotlinx.lincheck.annotations.Param
+import org.jetbrains.kotlinx.lincheck.paramgen.ThreadIdGen
+import kotlin.coroutines.resume
 
 class RWMutexIdeaSimplifiedLincheckTest : AbstractLincheckTest() {
     private val m = RWMutexIdeaSimplified()
@@ -203,13 +206,11 @@ internal class ReadWriteMutexIdeaSequential {
                 upgradingThread = cont
                 cont.invokeOnCancellation {
                     upgradingThread = null
-                    iwla = false
                     tryResumeReadersAndFirstWriteIntent()
                 }
             }
         } else {
             // We are free to acquire the write lock.
-            iwla = false
             wla = true
         }
     }
@@ -281,7 +282,7 @@ internal class ReadWriteMutexIdeaSequential {
 
     fun writeUnlock() {
         // Are there waiting writers?
-        if (ww.isNotEmpty()) {
+        if (ww.isNotEmpty() && !iwla) {
             resumeWriter()
         } else {
             wla = false

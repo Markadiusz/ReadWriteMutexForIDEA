@@ -5,12 +5,19 @@
 @file:Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER", "CANNOT_OVERRIDE_INVISIBLE_MEMBER")
 
 import kotlinx.coroutines.*
-import kotlin.test.*
-import kotlinx.coroutines.scheduling.*
-import java.io.*
+import kotlinx.coroutines.scheduling.DefaultScheduler
+import java.io.OutputStream
+import java.io.PrintStream
 import java.util.*
-import java.util.concurrent.atomic.*
-import kotlin.coroutines.*
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.ContinuationInterceptor
+import kotlin.coroutines.coroutineContext
+import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
+import kotlin.test.assertTrue
+import kotlin.test.expect
 
 private val VERBOSE = false
 
@@ -34,9 +41,9 @@ public val stressTestMultiplier = stressTestMultiplierSqrt * stressTestMultiplie
 @Suppress("ACTUAL_WITHOUT_EXPECT")
 public typealias TestResult = Unit
 
-public open class TestBase(private var disableOutCheck: Boolean)  {
+public open class TestBase(private var disableOutCheck: Boolean) {
 
-    constructor(): this(false)
+    constructor() : this(false)
 
     public val isBoundByJsTestTimeout = false
     private var actionIndex = AtomicInteger()
@@ -47,6 +54,7 @@ public open class TestBase(private var disableOutCheck: Boolean)  {
     private lateinit var threadsBefore: Set<Thread>
     private val uncaughtExceptions = Collections.synchronizedList(ArrayList<Throwable>())
     private var originalUncaughtExceptionHandler: Thread.UncaughtExceptionHandler? = null
+
     /*
      * System.out that we redefine in order to catch any debugging/diagnostics
      * 'println' from main source set.
@@ -207,6 +215,7 @@ public open class TestBase(private var disableOutCheck: Boolean)  {
                 when {
                     exCount > unhandled.size ->
                         printError("Too many unhandled exceptions $exCount, expected ${unhandled.size}, got: $e", e)
+
                     !unhandled[exCount - 1](e) ->
                         printError("Unhandled exception was unexpected: $e", e)
                 }
@@ -226,7 +235,7 @@ public open class TestBase(private var disableOutCheck: Boolean)  {
             error("Too few unhandled exceptions $exCount, expected ${unhandled.size}")
     }
 
-    protected inline fun <reified T: Throwable> assertFailsWith(block: () -> Unit): T {
+    protected inline fun <reified T : Throwable> assertFailsWith(block: () -> Unit): T {
         val result = runCatching(block)
         assertTrue(result.exceptionOrNull() is T, "Expected ${T::class}, but had $result")
         return result.exceptionOrNull()!! as T
@@ -238,7 +247,9 @@ public open class TestBase(private var disableOutCheck: Boolean)  {
 private const val WAIT_LOST_THREADS = 10_000L // 10s
 private val ignoreLostThreads = mutableSetOf<String>()
 
-fun ignoreLostThreads(vararg s: String) { ignoreLostThreads += s }
+fun ignoreLostThreads(vararg s: String) {
+    ignoreLostThreads += s
+}
 
 fun currentThreads(): Set<Thread> {
     var estimate = 0

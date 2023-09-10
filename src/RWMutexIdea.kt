@@ -1,8 +1,9 @@
-import kotlinx.atomicfu.*
-import kotlinx.atomicfu.locks.*
+import kotlinx.atomicfu.atomic
+import kotlinx.atomicfu.locks.ReentrantLock
 import kotlinx.coroutines.*
 import kotlin.concurrent.withLock
-import kotlin.coroutines.*
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.coroutineContext
 
 /**
  * This interface outlines the methods and structure for a specific readers-writer mutex for IntelliJ IDEA.
@@ -14,9 +15,20 @@ interface RWMutexIdea {
      * Acquires a "read" permit, allowing for concurrent read access.
      * This method may suspend until a permit is available.
      *
+     * @param cancelOnAcquireWritePermit indicates whether the current coroutine
+     *
      * @return a [ReadPermit] which can be released after use.
      */
-    suspend fun acquireReadPermit(): ReadPermit
+    suspend fun acquireReadPermit(cancelOnAcquireWritePermit: Boolean): ReadPermit
+
+    /**
+     * Tries to acquire a "read" permit, allowing for concurrent read access,
+     * without suspension.
+     *
+     * @return a [ReadPermit] which can be released after use,
+     * or `null` if this attempt has failed.
+     */
+    fun tryAcquireReadPermit(): ReadPermit?
 
     /**
      * Acquires a write permit, ensuring exclusive write access.
@@ -27,6 +39,15 @@ interface RWMutexIdea {
     suspend fun acquireWritePermit(): WritePermit
 
     /**
+     * Tries to acquire a write permit, ensuring exclusive write access,
+     * without suspension.
+     *
+     * @return a [WritePermit] which can be released after use,
+     * or `null` if this attempt has failed.
+     */
+    fun tryAcquireWritePermit(): WritePermit?
+
+    /**
      * Acquires a write-intent permit. This represents an intent to acquire a write permit in the future.
      * This allows potential optimizations where the transition from a read lock to a write lock can be smoother.
      * This method may suspend until a permit is available.
@@ -34,6 +55,29 @@ interface RWMutexIdea {
      * @return a [WriteIntentPermit] which can be upgraded to a [WritePermit] or released.
      */
     suspend fun acquireWriteIntentPermit(): WriteIntentPermit
+
+    /**
+     * Tries to acquire a write-intent permit without suspension.
+     *
+     * This represents an intent to acquire a write permit in the future.
+     * This allows potential optimizations where the transition from a read lock to a write lock can be smoother.
+     *
+     * @return a [WriteIntentPermit] which can be upgraded to a [WritePermit],
+     * or `null` if this attempt has failed.
+     */
+    fun tryAcquireWriteIntentPermit(): WriteIntentPermit?
+
+    /**
+     * The number of completed "write" actions
+     * (more formally, successful [WritePermit.release] calls).
+     *
+     * Using this information, one can easily implement the
+     * "upgrade 'read' permit to the 'write' one or restart" functionality
+     * by releasing the holding read permit, acquiring the write one,
+     * and checking that the [writeEpoch] has not been changed,
+     * restarting in the latter case.
+     */
+    val writeEpoch: Long
 }
 
 /**
@@ -74,42 +118,70 @@ interface WriteIntentPermit : Permit {
      * Upgrades this [WriteIntentPermit] to a full [WritePermit].
      * This method may suspend until the upgrade completes.
      *
-     * @return a [WritePermit] which can be released after use.
+     * Releasing the resulting [WritePermit] downgrades the mutex
+     * state back to the "write-intent lock is acquired" one.
+     *
+     * @return a [WritePermit] which can be released after use,
      */
-    suspend fun upgradeToWritePermit(): WritePermit
+    suspend fun acquireWritePermit(): WritePermit
+
+    /**
+     * Tries to upgrade this [WriteIntentPermit] to
+     * a full [WritePermit] without suspension.
+     *
+     * Releasing the resulting [WritePermit] downgrades the mutex
+     * state back to the "write-intent lock is acquired" one.
+     *
+     * @return a [WritePermit] which can be released after use.
+     * or `null` if this attempt has failed.
+     */
+    fun tryAcquireWritePermit(): WritePermit?
 }
 
 private class ReadPermitImpl(
-    private val mutex: RWMutexIdeaImpl,
-    private val coroutineContext: CoroutineContext
+        private val mutex: RWMutexIdeaImpl,
+        private val coroutineContextToCancel: CoroutineContext?
 ) : ReadPermit {
     // false -- "acquired"
     // true  -- "released"
     private val state = atomic(false)
+
+    private val cancellable
+        get() =
+            coroutineContextToCancel != null
 
     override fun release() {
         // Ensure that the permit cannot be released multiple times.
         check(state.compareAndSet(false, true)) {
             "This 'read' permit has already been released"
         }
-        // Remove this reader from the list of active ones.
-        // It is possible that this reader has already been
-        // logically cancelled due to a concurrent race --
-        // this is fine :)
-        mutex.activeReadersLock.withLock {
-            mutex.activeReaders -= this@ReadPermitImpl
+        if (cancellable) {
+            // Remove this reader from the list of active ones.
+            // It is possible that this reader has already been
+            // logically cancelled due to a concurrent race --
+            // this is fine :)
+            mutex.activeReadersLock.withLock {
+                mutex.activeReaders -= this@ReadPermitImpl
+            }
         }
         // Release the permit.
         mutex.mutex.releaseReadPermit()
     }
 
     fun cancel() {
-        coroutineContext.cancel()
+        check(cancellable) { "This permit is not cancellable" }
+        coroutineContextToCancel!!.cancel(ReadCancellationException)
     }
 }
 
+object ReadCancellationException : CancellationException(
+        "The running 'read' operation associated with the acquired `ReadPermit` has been cancelled by `RWMutexIdea`"
+) {
+    private fun readResolve(): Any = ReadCancellationException
+}
+
 private class WritePermitImpl(
-    private val mutex: RWMutexIdeaImpl
+        private val mutex: RWMutexIdeaImpl
 ) : WritePermit {
     // false -- "acquired"
     // true  -- "released"
@@ -120,12 +192,16 @@ private class WritePermitImpl(
         check(state.compareAndSet(false, true)) {
             "This 'write' permit has already been released"
         }
+        // Increment the write epoch.
+        val curEpoch = mutex._writeEpoch.value
+        mutex._writeEpoch.value = curEpoch + 1
+        // Release the write permit.
         mutex.mutex.releaseWritePermit()
     }
 }
 
 private class WriteIntentPermitImpl(
-    private val mutex: RWMutexIdeaImpl
+        private val mutex: RWMutexIdeaImpl
 ) : WriteIntentPermit {
 
     // 0 -- "write-intent" permit acquired
@@ -146,7 +222,7 @@ private class WriteIntentPermitImpl(
         mutex.mutex.releaseWriteIntentPermit()
     }
 
-    override suspend fun upgradeToWritePermit(): WritePermit {
+    override suspend fun acquireWritePermit(): WritePermit {
         // Ensure that upgrading cannot be called multiple times
         // or after this permit has been released.
         check(state.compareAndSet(0, 2)) {
@@ -160,6 +236,25 @@ private class WriteIntentPermitImpl(
         mutex.mutex.upgradeWriteIntentToWrite()
         return WritePermitImpl(mutex)
     }
+
+    override fun tryAcquireWritePermit(): WritePermit? {
+        // Ensure that upgrading cannot be called multiple times
+        // or after this permit has been released.
+        check(state.compareAndSet(0, 2)) {
+            if (state.value == 1) {
+                "This 'write-intent' permit has already been released"
+            } else { // invoked.value == 2
+                "This 'write-intent' permit has already been upgraded to the 'write' one"
+            }
+        }
+        return if (mutex.mutex.tryUpgradeWriteIntentToWrite()) {
+            WritePermitImpl(mutex)
+        } else {
+            // The attempt has failed; reset the state and finish.
+            state.value = 0
+            null
+        }
+    }
 }
 
 private class RWMutexIdeaImpl : RWMutexIdea {
@@ -168,17 +263,35 @@ private class RWMutexIdeaImpl : RWMutexIdea {
     // Maintain a set of active readers to cancel the
     // corresponding coroutines when a "write" request comes.
     // For simplicity, we use coarse-grained locking approach.
+    //
+    // TODO: this synchronization is incorrect, but it's OK for a prototype.
     val activeReaders: MutableSet<ReadPermitImpl> = HashSet()
     val activeReadersLock = ReentrantLock()
 
-    override suspend fun acquireReadPermit(): ReadPermit {
+    val _writeEpoch = atomic(0L)
+
+    override val writeEpoch: Long
+        get() = _writeEpoch.value
+
+    override suspend fun acquireReadPermit(cancelOnAcquireWritePermit: Boolean): ReadPermit {
         mutex.acquireReadPermit()
-        return ReadPermitImpl(this, coroutineContext).also {
-            activeReadersLock.withLock {
-                activeReaders += it
+        return if (cancelOnAcquireWritePermit) {
+            ReadPermitImpl(this, coroutineContext).also {
+                activeReadersLock.withLock {
+                    activeReaders += it
+                }
             }
+        } else {
+            ReadPermitImpl(this, null)
         }
     }
+
+    override fun tryAcquireReadPermit(): ReadPermit? =
+        if (mutex.tryAcquireReadPermit()) {
+            ReadPermitImpl(this, null)
+        } else {
+            null
+        }
 
     override suspend fun acquireWritePermit(): WritePermit {
         cancelActiveReaders()
@@ -186,10 +299,25 @@ private class RWMutexIdeaImpl : RWMutexIdea {
         return WritePermitImpl(this)
     }
 
+    override fun tryAcquireWritePermit(): WritePermit? =
+        if (mutex.tryAcquireWritePermit()) {
+            WritePermitImpl(this)
+        } else {
+            null
+        }
+
+
     override suspend fun acquireWriteIntentPermit(): WriteIntentPermit {
         mutex.acquireWriteIntentPermit()
         return WriteIntentPermitImpl(this)
     }
+
+    override fun tryAcquireWriteIntentPermit(): WriteIntentPermit? =
+        if (mutex.tryAcquireWriteIntentPermit()) {
+            WriteIntentPermitImpl(this)
+        } else {
+            null
+        }
 
     fun cancelActiveReaders() {
         activeReadersLock.withLock {
@@ -242,11 +370,13 @@ internal class RWMutexIdeaSimplified {
 
     suspend fun acquireReadPermit() {
         // Try to acquire a "read" permit without suspension.
-        synchronizationLock.withLock {
-            if (tryAcquireReadPermitInternal()) return
-        }
+        if (tryAcquireReadPermit()) return
         // Slow-path with suspension.
         acquireReadPermitSlowPath()
+    }
+
+    fun tryAcquireReadPermit(): Boolean = synchronizationLock.withLock {
+        tryAcquireReadPermitInternal()
     }
 
     private suspend fun acquireReadPermitSlowPath() = suspendCancellableCoroutine<Unit> sc@{ cont ->
@@ -286,11 +416,13 @@ internal class RWMutexIdeaSimplified {
 
     suspend fun acquireWritePermit() {
         // Try to acquire the "write" permit without suspension.
-        synchronizationLock.withLock {
-            if (tryAcquireWritePermitInternal()) return
-        }
+        if (tryAcquireWritePermit()) return
         // Slow-path with suspension.
         acquireWritePermitSlowPath()
+    }
+
+    fun tryAcquireWritePermit(): Boolean = synchronizationLock.withLock {
+        tryAcquireWritePermitInternal()
     }
 
     private suspend fun acquireWritePermitSlowPath() = suspendCancellableCoroutine<Unit> sc@{ cont ->
@@ -334,11 +466,13 @@ internal class RWMutexIdeaSimplified {
 
     suspend fun acquireWriteIntentPermit() {
         // Try to acquire the "write-intent" permit without suspension.
-        synchronizationLock.withLock {
-            if (tryAcquireWriteIntentPermitInternal()) return
-        }
+        if (tryAcquireWriteIntentPermit()) return
         // Slow-path with suspension.
         acquireWriteIntentPermitSlowPath()
+    }
+
+    fun tryAcquireWriteIntentPermit(): Boolean = synchronizationLock.withLock {
+        tryAcquireWriteIntentPermitInternal()
     }
 
     private suspend fun acquireWriteIntentPermitSlowPath() = suspendCancellableCoroutine<Unit> sc@{ cont ->
@@ -381,14 +515,16 @@ internal class RWMutexIdeaSimplified {
     suspend fun upgradeWriteIntentToWrite() {
         // Try to upgrade the "write-intent" permit
         // to the "write" one without suspension.
-        synchronizationLock.withLock {
-            if (tryUpgradeWriteIntentToWriteInternal()) return
-        }
+        if (tryUpgradeWriteIntentToWrite()) return
         // Slow-path with suspension.
         upgradeWriteIntentToWriteSlowPath()
     }
 
-    private suspend fun upgradeWriteIntentToWriteSlowPath() = suspendCancellableCoroutine<Unit> sc@ { cont ->
+    fun tryUpgradeWriteIntentToWrite(): Boolean = synchronizationLock.withLock {
+        tryUpgradeWriteIntentToWriteInternal()
+    }
+
+    private suspend fun upgradeWriteIntentToWriteSlowPath() = suspendCancellableCoroutine<Unit> sc@{ cont ->
         synchronizationLock.withLock {
             // Try to upgrade the "write-intent" permit
             // to the "write" one without suspension.
@@ -397,7 +533,7 @@ internal class RWMutexIdeaSimplified {
                 return@sc
             }
             // Suspend.
-            isWriteIntentLockAcquired = false
+            isWriteIntentLockAcquired = true
             upgradingWriteIntent = cont
         }
         // On cancellation, remove this coroutine from the waiting list and
@@ -424,7 +560,7 @@ internal class RWMutexIdeaSimplified {
         // Is there an active reader?
         if (acquiredReadLocks > 0) return false
         // Upgrade the permit
-        isWriteIntentLockAcquired = false
+        isWriteIntentLockAcquired = true
         isWriteLockAcquired = true
         return true
     }
@@ -435,7 +571,7 @@ internal class RWMutexIdeaSimplified {
         }
         acquiredReadLocks--
         // Is it the last reader?
-        if (acquiredReadLocks == 0 && !isWriteIntentLockAcquired) {
+        if (acquiredReadLocks == 0 && (!isWriteIntentLockAcquired || upgradingWriteIntent != null)) {
             tryResumeFirstWriter()
         }
     }
@@ -447,7 +583,9 @@ internal class RWMutexIdeaSimplified {
         isWriteLockAcquired = false
         // Try resume first writer, resuming readers only
         // if no writer is waiting for the permit.
-        if (!tryResumeFirstWriter()) tryResumeReadersAndFirstWriteIntent()
+        if (isWriteIntentLockAcquired || !tryResumeFirstWriter()) {
+            tryResumeReadersAndFirstWriteIntent()
+        }
     }
 
     fun releaseWriteIntentPermit(): Unit = synchronizationLock.withLock {
