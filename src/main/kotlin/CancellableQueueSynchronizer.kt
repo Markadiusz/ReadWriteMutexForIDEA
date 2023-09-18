@@ -120,6 +120,11 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
     protected open val cancellationMode: CancellationMode get() = SIMPLE
 
     /**
+     * Specifies whether cancelled suspended coroutines should wait for the refused value to be returned.
+     */
+    protected open val waitUntilProcessed: Boolean get() = false
+
+    /**
      * This function is called when waiter is cancelled and smart
      * cancellation mode is used (so cancelled cells are skipped by
      * [resume]). By design, this handler performs the logical cancellation
@@ -356,7 +361,8 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                     // Return the refused value back to the
                     // data structure and finish successfully.
                     returnRefusedValue(value)
-                    segment.set(i, PROCESSED)
+                    if (waitUntilProcessed)
+                        segment.set(i, PROCESSED)
                     return TRY_RESUME_SUCCESS
                 }
                 // Does the cell store a cancellable continuation?
@@ -407,7 +413,8 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                         }
                     }
                     // Once the state is changed to `RESUMED`, `resume` is considered as successful.
-                    segment.set(i, PROCESSED)
+                    if (waitUntilProcessed)
+                        segment.set(i, PROCESSED)
                     return TRY_RESUME_SUCCESS
                 }
                 // Does the cell store a cancelling waiter, which is already logically
@@ -508,7 +515,9 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
             // and the value can be returned back to the data structure
             // only via a `returnValue(..)` call.
             if (!tryMarkCancelling(index)) {
-                while (get(index) !== PROCESSED) {}
+                if (waitUntilProcessed)
+                    while (get(index) !== PROCESSED) {
+                    }
                 return
             }
             // Do we use simple or smart cancellation?
@@ -544,7 +553,9 @@ internal abstract class CancellableQueueSynchronizer<T : Any> {
                 // `resume(..)` to process its value if needed.
                 val value = markRefuse(index)
                 if (value === null) {
-                    while (get(index) !== PROCESSED) {}
+                    if (waitUntilProcessed)
+                        while (get(index) !== PROCESSED) {
+                        }
                     return
                 }
                 @Suppress("UNCHECKED_CAST")

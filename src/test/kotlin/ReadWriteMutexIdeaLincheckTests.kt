@@ -24,21 +24,24 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
     private val writeLockAcquired = BooleanArray(6)
     private val intentWriteLockAcquired = BooleanArray(6)
 
-    @Operation(allowExtraSuspension = true, promptCancellation = false, nonParallelGroup = "writer")
+    @Operation(allowExtraSuspension = true, promptCancellation = false)
     suspend fun writeIntentLock(@Param(gen = ThreadIdGen::class) threadId: Int) {
         m.writeIntentLock()
+        assert(!intentWriteLockAcquired[threadId]) {
+            "The mutex is not reentrant, this `writeIntentLock()` invocation had to suspend"
+        }
         intentWriteLockAcquired[threadId] = true
     }
 
-    @Operation(nonParallelGroup = "writer")
-    fun writeIntentUnlock(@Param(gen = ThreadIdGen::class) threadId: Int, prioritizeWriters: Boolean): Boolean {
+    @Operation
+    fun writeIntentUnlock(@Param(gen = ThreadIdGen::class) threadId: Int): Boolean {
         if (!intentWriteLockAcquired[threadId]) return false
-        m.writeIntentUnlock(if (prioritizeWriters) PRIORITIZE_WRITERS else PRIORITIZE_INTENT)
+        m.writeIntentUnlock(PRIORITIZE_WRITERS)
         intentWriteLockAcquired[threadId] = false
         return true
     }
 
-    @Operation(allowExtraSuspension = true, nonParallelGroup = "writer")
+    @Operation(allowExtraSuspension = true)
     suspend fun upgradeWriteIntentToWriteLock(@Param(gen = ThreadIdGen::class) threadId: Int): Boolean {
         if (!intentWriteLockAcquired[threadId] || readLockAcquired[threadId] != 0) return false
         m.upgradeWriteIntentToWriteLock()
@@ -78,9 +81,9 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
     }
 
     @Operation
-    fun writeUnlock(@Param(gen = ThreadIdGen::class) threadId: Int, prioritizeWriters: Boolean): Boolean {
+    fun writeUnlock(@Param(gen = ThreadIdGen::class) threadId: Int): Boolean {
         if (!writeLockAcquired[threadId]) return false
-        m.writeUnlock(if (prioritizeWriters) PRIORITIZE_WRITERS else PRIORITIZE_INTENT)
+        m.writeUnlock(PRIORITIZE_WRITERS)
         writeLockAcquired[threadId] = false
         return true
     }
@@ -105,18 +108,21 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
 
     //@Test
     fun customModelCheckingTest() = ModelCheckingOptions()
-        .invocationsPerIteration(20_000)
+        .invocationsPerIteration(50_000)
         .iterations(500)
         .addCustomScenario {
             parallel {
                 thread {
-                    actor(::writeIntentLock, 1)
-                    Actor(::upgradeWriteIntentToWriteLock.javaMethod!!, listOf(1), false, true)
-                    actor(::writeIntentUnlock, 1, false)
+                    actor(::writeLock, 1)
+                    //Actor(::writeLock.javaMethod!!, listOf(1), false, true)
                 }
                 thread {
-                    actor(::writeLock, 2)
-                    actor(::writeUnlock, 2, true)
+                    actor(::readLock, 2)
+                    actor(::writeIntentLock, 2)
+                }
+                thread {
+                    actor(::writeIntentLock, 3)
+                    actor(::upgradeWriteIntentToWriteLock, 3)
                 }
             }
         }
@@ -136,9 +142,9 @@ class ReadWriteMutexIdeaLincheckTestSequential {
         intentWriteLockAcquired[threadId] = true
     }
 
-    fun writeIntentUnlock(threadId: Int, prioritizeWriters: Boolean): Boolean {
+    fun writeIntentUnlock(threadId: Int): Boolean {
         if (!intentWriteLockAcquired[threadId]) return false
-        m.writeIntentUnlock(prioritizeWriters)
+        m.writeIntentUnlock(true)
         intentWriteLockAcquired[threadId] = false
         return true
     }
@@ -178,9 +184,9 @@ class ReadWriteMutexIdeaLincheckTestSequential {
         writeLockAcquired[threadId] = true
     }
 
-    fun writeUnlock(threadId: Int, prioritizeWriters: Boolean): Boolean {
+    fun writeUnlock(threadId: Int): Boolean {
         if (!writeLockAcquired[threadId]) return false
-        m.writeUnlock(prioritizeWriters)
+        m.writeUnlock(true)
         writeLockAcquired[threadId] = false
         return true
     }
@@ -239,7 +245,8 @@ internal class ReadWriteMutexIdeaSequential {
     fun writeIntentUnlock(prioritizeWriters: Boolean) {
         iwla = false
         // Resume a writer if there are no readers.
-        if (ar == 0 && ww.isNotEmpty() && (prioritizeWriters || wi.isEmpty())) {
+        //if (ar == 0 && ww.isNotEmpty() && (prioritizeWriters || wi.isEmpty())) {
+        if (ar == 0 && ww.isNotEmpty()) {
             wla = true
             resumeWriter()
         } else {
@@ -332,7 +339,8 @@ internal class ReadWriteMutexIdeaSequential {
 
     fun writeUnlock(prioritizeWriters: Boolean) {
         // Are there waiting writers?
-        if (ww.isNotEmpty() && (prioritizeWriters || wi.isEmpty())) {
+        //if (ww.isNotEmpty() && (prioritizeWriters || wi.isEmpty())) {
+        if (ww.isNotEmpty()) {
             resumeWriter()
         } else {
             wla = false

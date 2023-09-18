@@ -202,6 +202,9 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
     // The number of coroutines waiting for a reader lock in `cqsReaders`.
     private val waitingReaders = atomic(0)
 
+    // The number of coroutines waiting for a writeIntent lock in `cqsIntent`.
+    private val waitingIntents = atomic(0)
+
     // This state field contains several counters and is always updated atomically by `CAS`:
     // - `AR` (active readers) is a 30-bit counter which represents the number
     //                         of coroutines holding a read lock;
@@ -219,26 +222,64 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
     private val cqsUpgrade = UpgradeCQS() // the place where the upgrading thread should suspend and be resumed
 
     override suspend fun writeIntentLock() {
+        // Try to acquire a reader lock without suspension.
+        if (tryWriteIntentLockOnce()) return
+        // The attempt fails, invoke the slow-path. This slow-path
+        // part is implemented in a separate function to guarantee
+        // that the tail call optimization is applied here.
+        writeIntentLockSlowPath()
+    }
+
+    private fun tryWriteIntentLockOnce(): Boolean {
         while (true) {
             val s = state.value
             // Is there an active writer (the WLA flag is set) or is the intentLock acquired (the IWLA flag is set)?
             if (!s.wla && !s.iwla && s.ww == 0) {
-                assert { !s.wi }
                 // Try to acquire the writeIntent lock, re-try the operation if this CAS fails.
-                if (state.compareAndSet(s, state(s.ar, false, 0, s.rwr, true, false, s.upgr)))
-                    return
-            } else {
-                if (state.compareAndSet(s, state(s.ar, s.wla, s.ww, s.rwr, s.iwla, true, s.upgr))) {
-                    val acquired: Boolean = suspendCancellableCoroutineReusable { cont ->
-                        if (!cqsIntent.suspend(cont as Waiter)) {
-                            cont.resume(false)
+                if (state.compareAndSet(s, state(s.ar, false, 0, s.rwr, true, s.wi, s.upgr)))
+                    return true
+            } else return false
+        }
+    }
+
+    private suspend fun writeIntentLockSlowPath() {
+        waitingIntents.incrementAndGet()
+        while (true) {
+            val s = state.value
+            // Is there an active writer (the WLA flag is set) or is the intentLock acquired (the IWLA flag is set)?
+            if (!s.wla && !s.iwla && s.ww == 0) {
+                while (true) {
+                    // Read the current number of waiting write intents.
+                    val wi = waitingIntents.value
+                    // TODO comment
+                    if (wi == 0) {
+                        val acquired: Boolean = suspendCancellableCoroutineReusable { cont ->
+                            if (!cqsIntent.suspend(cont as Waiter)) {
+                                cont.resume(false)
+                            }
                         }
+                        if (acquired)
+                            return
+                        assert { false } // assumes that suspend never fails
                     }
-                    if (acquired) {
+                    // Otherwise, try to decrement the number of waiting
+                    // write intents and retry the operation from the beginning.
+                    if (waitingIntents.compareAndSet(wi, wi - 1)) {
+                        // Try again starting from the fast path.
+                        writeIntentLock()
                         return
                     }
-                    assert { false } // assumes that suspend never fails
                 }
+            } else {
+                val acquired: Boolean = suspendCancellableCoroutineReusable { cont ->
+                    if (!cqsIntent.suspend(cont as Waiter)) {
+                        cont.resume(false)
+                    }
+                }
+                if (acquired) {
+                    return
+                }
+                assert { false } // assumes that suspend never fails
             }
         }
     }
@@ -250,7 +291,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
     ) {
         while (true) {
             val s = state.value
-            if (s.ar == 0 && !s.rwr && s.ww > 0 && (policy != PRIORITIZE_INTENT || !s.wi)) {
+            if (s.ar == 0 && !s.rwr && s.ww > 0) {
                 // There are no active or incoming readers and we should resume a writer.
                 if (state.compareAndSet(s, state(s.ar, true, s.ww - 1, s.rwr, false, s.wi, false))) {
                     cqsWriters.resume(true)
@@ -258,10 +299,10 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 }
                 // CAS failed => the state has changed.
                 // Re-read it and try to release the writeIntent lock again.
-            } else if (s.wi) {
-                // We should resume a write intent.
-                if (state.compareAndSet(s, state(s.ar, false, s.ww, s.rwr, true, s.wi, false))) {
-                    cqsIntent.resume(true)
+            } else if (!s.rwr && s.ww == 0) {
+                // We should try resuming a write intent.
+                if (state.compareAndSet(s, state(s.ar, false, s.ww, true, false, s.wi, false))) {
+                    completeWaitingReadersResumption() // TODO
                     return
                 }
                 // CAS failed => the state has changed.
@@ -287,7 +328,6 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                 if (state.compareAndSet(s, state(s.ar, true, s.ww, s.rwr, false, s.wi, s.upgr)))
                     return
             } else {
-                //if (s.rwr) continue // TODO try to get rid of this waiting
                 if (state.compareAndSet(s, state(s.ar, s.wla, s.ww, s.rwr, s.iwla, s.wi, true))) {
                     // Suspend and wait until all readers finish.
                     suspendCancellableCoroutineReusable { cont ->
@@ -316,15 +356,15 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             // readers has been incremented incorrectly.
             while (true) {
                 // First, read the current number of waiting write intents.
-                val s = state.value
+                val wi = waitingIntents.value
                 // Check whether it has already reached zero -- in this
                 // case a concurrent `write.unlock()` will invoke `resume()`
                 // for this cancelled operation eventually, so `onCancellation()`
                 // should return `false` to refuse the granted lock.
-                if (!s.wi) return false
-                // Otherwise, try to decrement the number of waiting readers keeping
+                if (wi == 0) return false
+                // Otherwise, try to decrement the number of waiting write intents keeping
                 // the counter non-negative and successfully finish the cancellation.
-                if (state.compareAndSet(s, state(s.ar, s.wla, s.ww, s.rwr, s.iwla, false, s.upgr))) return true
+                if (waitingIntents.compareAndSet(wi, wi - 1)) return true
             }
         }
 
@@ -345,6 +385,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
     private inner class UpgradeCQS : CancellableQueueSynchronizer<Boolean>() {
         override val resumeMode get() = ASYNC
         override val cancellationMode get() = SMART
+        override val waitUntilProcessed get() = true
 
         override fun onCancellation(): Boolean {
             while (true) {
@@ -430,7 +471,8 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             var resumeReaders = false
             state.getAndUpdate { s ->
                 resumeReaders = !s.rwr && s.ww == 0
-                state(s.ar, false, s.ww, resumeReaders, true, s.wi, false)
+                val rwrUpd = s.rwr || resumeReaders
+                state(s.ar, false, s.ww, rwrUpd, true, s.wi, false)
             }
             if (resumeReaders)
                 completeWaitingReadersResumption()
@@ -745,8 +787,9 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             check(!s.rwr)
             assert { s.ar == 0 }
             // Should we resume the next writer?
-            val resumeWriter = s.ww > 0 && (policy == PRIORITIZE_WRITERS || !s.wi)
-            val resumeIntent = s.wi && (policy != PRIORITIZE_WRITERS || s.ww == 0)
+            //val resumeWriter = s.ww > 0 && (policy == PRIORITIZE_WRITERS || !s.wi)
+            val resumeWriter = s.ww > 0
+            //val resumeIntent = s.wi && (policy != PRIORITIZE_WRITERS || s.ww == 0)
             if (resumeWriter) {
                 // Resume the next writer - try to decrement the number of waiting
                 // writers and resume the first one in `cqsWriters` on success.
@@ -756,7 +799,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     }
                     assert { false } // assumes that resume never fails
                 }
-            } else if (resumeIntent) {
+            } /*else if (resumeIntent) {
                 // Resume the next write intent - try to decrement the number of waiting
                 // write intents and resume the first one in `cqsIntent` on success.
                 // Resume waiting readers.
@@ -767,7 +810,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
                     }
                     assert { false } // assumes that resume never fails
                 }
-            } else {
+            }*/ else {
                 // Resume waiting readers. Reset the `WLA` flag and set the `RWR` flag atomically,
                 // completing the resumption via `completeWaitingReadersResumption()` after that.
                 // Note that this function also checks whether the next waiting writer should be resumed
@@ -838,18 +881,35 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         }
         // We might need to resume a waiting write intent,
         // if it was suspended by the presence of a waiting writer.
-        var resumeIntent = false
-        state.getAndUpdate { s ->
-            resumeIntent = !s.wla && !s.iwla && s.wi
-            val wiUpd = if (resumeIntent) false else s.wi
-            val iwlaUpd = s.iwla || resumeIntent
-            state(s.ar, s.wla, s.ww, s.rwr, iwlaUpd, wiUpd, s.upgr)
+        val wi = waitingIntents.getAndUpdate { wi ->
+            if (wi > 0) wi - 1 else 0
         }
-        if (resumeIntent) {
-            // Resume the next write intent physically and finish
-            cqsIntent.resume(true)
-            return
+        if (wi > 0) {
+            var resumeIntent = false
+            state.update { s ->
+                resumeIntent = !s.wla && !s.iwla && s.ww == 0
+                val iwlaUpd = s.iwla || resumeIntent
+                state(s.ar, s.wla, s.ww, s.rwr, iwlaUpd, s.wi, s.upgr)
+            }
+            if (resumeIntent) {
+                cqsIntent.resume(true)
+            } else {
+                waitingIntents.incrementAndGet()
+            }
         }
+
+        // TODO: Might be unnecessary. Think about removing it.
+        if (waitingIntents.value > 0) {
+            while (true) {
+                val s = state.value
+                if (s.wla || s.ww > 0 || s.rwr || s.iwla) break
+                if (state.compareAndSet(s, state(s.ar, false, 0, true, s.iwla, s.wi, s.upgr))) {
+                    completeWaitingReadersResumption()
+                    return
+                }
+            }
+        }
+
         // Meanwhile, it could be possible for a writer to come and suspend due to the `RWR` flag.
         // After that, all the following readers suspend since a writer is waiting for the lock.
         // However, if the writer becomes canceled, it cannot resume these suspended readers if the `RWR` flag
@@ -925,7 +985,7 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
             "<wr=${waitingReaders.value},ar=${state.value.ar}" +
                     ",wla=${state.value.wla},ww=${state.value.ww}" +
                     ",rwr=${state.value.rwr}" +
-                    ",iwla=${state.value.iwla}" + ",wi=${state.value.wi}" +
+                    ",iwla=${state.value.iwla}" + ",wi=${waitingIntents.value}" +
                     ",upgr=${state.value.upgr}" +
                     ",cqs_r={$cqsReaders},cqs_w={$cqsWriters}" +
                     ",cqs_i={$cqsIntent},cqs_u={$cqsUpgrade}>"
