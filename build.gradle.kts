@@ -13,6 +13,9 @@ repositories {
 
 tasks.test {
     useJUnitPlatform()
+
+    minHeapSize = "1000m"
+    maxHeapSize = "4000m"
 }
 
 apply(plugin = "idea")
@@ -38,10 +41,6 @@ buildscript {
 }
 
 apply(plugin = "kotlinx-atomicfu")
-
-tasks.test {
-    useJUnitPlatform()
-}
 
 tasks.withType<KotlinCompile> {
     kotlinOptions.jvmTarget = "1.8"
