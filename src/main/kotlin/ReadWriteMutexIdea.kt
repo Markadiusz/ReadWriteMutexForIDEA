@@ -862,8 +862,10 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         state.getAndUpdate { s ->
             if (s.upgr && s.ar == 0) {
                 resumeUpgrade = true
+                resumeWriter = false
                 state(0, true, s.ww, false, false, false)
             } else {
+                resumeUpgrade = false
                 resumeWriter = s.ar == 0 && s.ww > 0 && !s.iwla
                 val wwUpd = if (resumeWriter) s.ww - 1 else s.ww
                 state(s.ar, resumeWriter, wwUpd, false, s.iwla, s.upgr)
