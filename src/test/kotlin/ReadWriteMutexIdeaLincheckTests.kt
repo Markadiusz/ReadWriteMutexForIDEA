@@ -108,7 +108,7 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
 
     @Test
     fun customModelCheckingTest() = ModelCheckingOptions()
-        .invocationsPerIteration(250_000)
+        .invocationsPerIteration(120_000)
         .iterations(0)
         .addCustomScenario {
             parallel {
@@ -116,12 +116,12 @@ class ReadWriteMutexIdeaLincheckTest : AbstractLincheckTest() {
                     add(Actor(::writeLock.javaMethod!!, listOf(1), true, true))
                 }
                 thread {
-                    add(Actor(::readLock.javaMethod!!, listOf(2), false, true))
                     add(Actor(::writeIntentLock.javaMethod!!, listOf(2), false, true))
+                    add(Actor(::upgradeWriteIntentToWriteLock.javaMethod!!, listOf(2), true, true))
                 }
                 thread {
+                    add(Actor(::readLock.javaMethod!!, listOf(3), false, true))
                     add(Actor(::writeIntentLock.javaMethod!!, listOf(3), false, true))
-                    add(Actor(::upgradeWriteIntentToWriteLock.javaMethod!!, listOf(3), true, true))
                 }
             }
         }

@@ -14,8 +14,8 @@ repositories {
 tasks.test {
     useJUnitPlatform()
 
-    minHeapSize = "1000m"
-    maxHeapSize = "4000m"
+    minHeapSize = "500m"
+    maxHeapSize = "2000m"
 }
 
 apply(plugin = "idea")
