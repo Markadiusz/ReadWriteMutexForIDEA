@@ -15,8 +15,8 @@ class RWMutexIdeaTest : TestBase() {
         yield()
 
         val writeJob = launch {
-            m.acquireWritePermit()
             expect(2)
+            m.acquireWritePermit()
         }
         writeJob.join()
 
