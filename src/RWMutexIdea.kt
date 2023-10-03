@@ -139,8 +139,8 @@ interface WriteIntentPermit : Permit {
 }
 
 private class ReadPermitImpl(
-        private val mutex: RWMutexIdeaImpl,
-        private val coroutineContextToCancel: CoroutineContext?
+    private val mutex: RWMutexIdeaImpl,
+    private val coroutineContextToCancel: CoroutineContext?
 ) : ReadPermit {
     // false -- "acquired"
     // true  -- "released"
@@ -175,13 +175,13 @@ private class ReadPermitImpl(
 }
 
 object ReadCancellationException : CancellationException(
-        "The running 'read' operation associated with the acquired `ReadPermit` has been cancelled by `RWMutexIdea`"
+    "The running 'read' operation associated with the acquired `ReadPermit` has been cancelled by `RWMutexIdea`"
 ) {
     private fun readResolve(): Any = ReadCancellationException
 }
 
 private class WritePermitImpl(
-        private val mutex: RWMutexIdeaImpl
+    private val mutex: RWMutexIdeaImpl
 ) : WritePermit {
     // false -- "acquired"
     // true  -- "released"
@@ -201,7 +201,7 @@ private class WritePermitImpl(
 }
 
 private class WriteIntentPermitImpl(
-        private val mutex: RWMutexIdeaImpl
+    private val mutex: RWMutexIdeaImpl
 ) : WriteIntentPermit {
 
     // 0 -- "write-intent" permit acquired
