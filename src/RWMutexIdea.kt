@@ -14,8 +14,12 @@ interface RWMutexIdea {
     /**
      * Acquires a "read" permit, allowing for concurrent read access.
      * This method may suspend until a permit is available.
+     * If [cancelOnAcquireWritePermit] is set, this method must be called in such a manner
+     * that the [ReadPermit] is released upon the coroutine's cancellation
+     * (i.e. inside a try { ... } finally { ... } block).
      *
      * @param cancelOnAcquireWritePermit indicates whether the current coroutine
+     * is cancelled upon the acquisition of a [WritePermit]
      *
      * @return a [ReadPermit] which can be released after use.
      */
