@@ -17,20 +17,18 @@ class RWMutexIdeaTest : TestBase() {
                 readPermit = m.acquireReadPermit(true)
                 expect(1)
                 suspendForever()
-            }
-            finally {
+            } finally {
                 expect(3)
                 readPermit!!.release()
             }
         }
         yield()
 
-        val writeJob = launch {
-            expect(2)
-            m.acquireWritePermit()
-            expect(4)
-        }
-        writeJob.join()
+        expect(2)
+
+        m.acquireWritePermit()
+
+        expect(4)
 
         finish(5)
     }
@@ -161,8 +159,7 @@ class RWMutexIdeaTest : TestBase() {
                 readPermit = m.acquireReadPermit(true)
                 expect(2)
                 suspendForever()
-            }
-            finally {
+            } finally {
                 expect(3)
                 readPermit!!.release()
             }
@@ -175,5 +172,73 @@ class RWMutexIdeaTest : TestBase() {
         writePermit.release()
 
         finish(5)
+    }
+
+    @Test
+    fun writeEpochValue() = runTest {
+        val m = RWMutexIdea()
+
+        check(m.writeEpoch == 0L)
+
+        val writePermit = m.acquireWritePermit()
+        check(m.writeEpoch == 0L)
+
+        writePermit.release()
+        check(m.writeEpoch == 1L)
+
+        val writePermit2 = m.acquireWritePermit()
+        check(m.writeEpoch == 1L)
+
+        val writeJob = launch {
+            val writePermit3 = m.acquireWritePermit()
+            // Should be 2 because the writeLock must have been released for us to acquire it.
+            check(m.writeEpoch == 2L)
+
+            writePermit3.release()
+            check(m.writeEpoch == 3L)
+        }
+        yield()
+
+        check(m.writeEpoch == 1L)
+
+        writePermit2.release()
+
+        writeJob.join()
+        check(m.writeEpoch == 3L)
+
+        val writeIntentPermit = m.acquireWriteIntentPermit()
+        check(m.writeEpoch == 3L)
+
+        val writePermit4 = writeIntentPermit.acquireWritePermit()
+        check(m.writeEpoch == 3L)
+
+        writePermit4.release()
+        check(m.writeEpoch == 4L)
+
+        val readPermit = m.acquireReadPermit(true)
+        check(m.writeEpoch == 4L)
+
+        readPermit.release()
+        check(m.writeEpoch == 4L)
+    }
+
+    @Test
+    fun allActiveReadersAreCancelled() = runTest {
+        val m = RWMutexIdea()
+
+        repeat(10) {
+            launch {
+                var readPermit: Permit? = null
+                try {
+                    readPermit = m.acquireReadPermit(true)
+                    suspendForever()
+                } finally {
+                    readPermit!!.release()
+                }
+            }
+        }
+        yield()
+
+        m.acquireWritePermit()
     }
 }
