@@ -5,7 +5,7 @@ import kotlin.test.Test
 
 class RWMutexIdeaTest : TestBase() {
 
-    suspend fun suspendForever() = delay(1_000_000_000L)
+    private suspend fun suspendForever() = delay(1_000_000_000L)
 
     @Test
     fun cancelOnAcquiredWritePermitTrue() = runTest {
@@ -240,5 +240,98 @@ class RWMutexIdeaTest : TestBase() {
         yield()
 
         m.acquireWritePermit()
+    }
+
+    @Test
+    fun writersPrioritisedOverWriteIntents() = runTest {
+        val m = RWMutexIdea()
+
+        val mainWritePermit = m.acquireWritePermit()
+
+        val writeIntentJob = launch {
+            expect(1)
+            val writeIntentPermit = m.acquireWriteIntentPermit()
+            expect(5)
+            writeIntentPermit.release()
+        }
+        yield()
+
+        val writeJob = launch {
+            expect(2)
+            val writePermit = m.acquireWritePermit()
+            expect(4)
+            writePermit.release()
+        }
+        yield()
+
+        expect(3)
+
+        mainWritePermit.release()
+
+        writeJob.join()
+        writeIntentJob.join()
+
+        finish(6)
+    }
+
+    @Test
+    fun readersDontStopWriters() = runTest {
+        val m = RWMutexIdea()
+
+        val job1 = launch {
+            val writePermit = m.acquireWritePermit()
+            expect(1)
+            writePermit.release()
+
+            var readPermit: ReadPermit? = null
+            try {
+                readPermit = m.acquireReadPermit(true)
+                expect(2)
+                suspendForever()
+            } finally {
+                readPermit!!.release()
+            }
+        }
+        yield()
+
+        val job2 = launch {
+            val writePermit = m.acquireWritePermit()
+            expect(3)
+            writePermit.release()
+
+            var readPermit: ReadPermit? = null
+            try {
+                readPermit = m.acquireReadPermit(true)
+                expect(4)
+                suspendForever()
+            } finally {
+                readPermit!!.release()
+            }
+        }
+        yield()
+        yield()
+
+        val job3 = launch {
+            val writePermit = m.acquireWritePermit()
+            expect(5)
+            writePermit.release()
+
+            var readPermit: ReadPermit? = null
+            try {
+                readPermit = m.acquireReadPermit(true)
+                expect(6)
+                suspendForever()
+            } finally {
+                readPermit!!.release()
+            }
+        }
+        yield()
+
+        job1.join()
+        job2.join()
+        job3.cancel()
+        job3.join()
+
+        finish(7)
     }
 }
