@@ -17,6 +17,7 @@ class RWMutexIdeaTest : TestBase() {
                 readPermit = m.acquireReadPermit(true)
                 expect(1)
                 suspendForever()
+                expectUnreached()
             } finally {
                 expect(3)
                 readPermit!!.release()
@@ -159,6 +160,7 @@ class RWMutexIdeaTest : TestBase() {
                 readPermit = m.acquireReadPermit(true)
                 expect(2)
                 suspendForever()
+                expectUnreached()
             } finally {
                 expect(3)
                 readPermit!!.release()
@@ -232,6 +234,7 @@ class RWMutexIdeaTest : TestBase() {
                 try {
                     readPermit = m.acquireReadPermit(true)
                     suspendForever()
+                    expectUnreached()
                 } finally {
                     readPermit!!.release()
                 }
@@ -288,6 +291,7 @@ class RWMutexIdeaTest : TestBase() {
                 readPermit = m.acquireReadPermit(true)
                 expect(2)
                 suspendForever()
+                expectUnreached()
             } finally {
                 readPermit!!.release()
             }
@@ -304,6 +308,7 @@ class RWMutexIdeaTest : TestBase() {
                 readPermit = m.acquireReadPermit(true)
                 expect(4)
                 suspendForever()
+                expectUnreached()
             } finally {
                 readPermit!!.release()
             }
@@ -321,6 +326,7 @@ class RWMutexIdeaTest : TestBase() {
                 readPermit = m.acquireReadPermit(true)
                 expect(6)
                 suspendForever()
+                expectUnreached()
             } finally {
                 readPermit!!.release()
             }
@@ -331,6 +337,46 @@ class RWMutexIdeaTest : TestBase() {
         job2.join()
         job3.cancel()
         job3.join()
+
+        finish(7)
+    }
+
+    @Test
+    fun writeIntentResumesTheWriterBecauseTheReaderWasCancelledByTheWriter() = runTest {
+        val m = RWMutexIdea()
+
+        val writeIntentPermit = m.acquireWriteIntentPermit()
+
+        expect(1)
+
+        val readJob = launch {
+            var readPermit: ReadPermit? = null
+            try {
+                readPermit = m.acquireReadPermit(true)
+                expect(2)
+                suspendForever()
+                expectUnreached()
+            } finally {
+                readPermit!!.release()
+            }
+        }
+        yield()
+
+        expect(3)
+
+        val writeJob = launch {
+            expect(4)
+            m.acquireWritePermit()
+            expect(6)
+        }
+        yield()
+
+        expect(5)
+
+        writeIntentPermit.release()
+
+        readJob.join()
+        writeJob.join()
 
         finish(7)
     }
