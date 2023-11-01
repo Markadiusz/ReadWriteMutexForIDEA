@@ -857,29 +857,29 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         // Therefore, in the end, we check whether the number of active readers is 0
         // and resume the next waiting writer in this case (if there exists one).
         // Resume a suspended upgrading thread or a waiting writer.
-        var resumeUpgrade = false
-        var resumeWriter = false
-        state.getAndUpdate { s ->
-            if (s.upgr && s.ar == 0) {
-                resumeUpgrade = true
-                resumeWriter = false
-                state(0, true, s.ww, false, false, false)
+        while (true) {
+            val s = state.value
+            if (s.ar == 0 && s.upgr) {
+                // Reset the RWR flag and upgrade the suspended write intent to a writer.
+                if (state.compareAndSet(s, state(0, true, s.ww, false, false, false))) {
+                    // CAS succeeded. Resume the upgrading thread physically and finish.
+                    cqsUpgrade.resume(true)
+                    return
+                }
+            } else if (s.ar == 0 && s.ww > 0 && !s.iwla) {
+                // Reset the RWR flag, decrement the number of waiting writers
+                // and resume a waiting writer.
+                if (state.compareAndSet(s, state(0, true, s.ww - 1, false, false, false))) {
+                    // CAS succeeded. Resume the next writer physically and finish.
+                    cqsWriters.resume(true)
+                    return
+                }
             } else {
-                resumeUpgrade = false
-                resumeWriter = s.ar == 0 && s.ww > 0 && !s.iwla
-                val wwUpd = if (resumeWriter) s.ww - 1 else s.ww
-                state(s.ar, resumeWriter, wwUpd, false, s.iwla, s.upgr)
+                // There are no waiting writers that can be resumed. Just reset the RWR flag.
+                if (state.compareAndSet(s, state(s.ar, s.wla, s.ww, false, s.iwla, s.upgr))) {
+                    break
+                }
             }
-        }
-        if (resumeUpgrade) {
-            // Resume the upgrading thread physically and finish
-            cqsUpgrade.resume(true)
-            return
-        }
-        if (resumeWriter) {
-            // Resume the next writer physically and finish
-            cqsWriters.resume(true)
-            return
         }
         // We might need to resume a waiting write intent,
         // if it was suspended by the presence of a waiting writer.
@@ -889,29 +889,38 @@ internal class ReadWriteMutexIdeaImpl : ReadWriteMutexIdea, Mutex {
         if (wi > 0) {
             var resumeIntent = false
             state.update { s ->
+                // A write intent can be resumed when there isn't a writer or a write intent
+                // and there are no waiting writers.
                 resumeIntent = !s.wla && !s.iwla && s.ww == 0
+                // We set the IWLA bit if we are to resume a write intent.
                 val iwlaUpd = s.iwla || resumeIntent
                 state(s.ar, s.wla, s.ww, s.rwr, iwlaUpd, s.upgr)
             }
             if (resumeIntent) {
+                // Resume the next write intent physically.
                 cqsIntent.resume(true)
             } else {
+                // A write intent couldn't be resumed.
+                // Increment the number of waiting write intents back.
                 waitingIntents.incrementAndGet()
             }
         }
-
-        // TODO: Might be unnecessary. Think about removing it.
+        // We might need to restart the resumption of write intents
+        // when this previous attempt failed because of the presence
+        // of a parallel write intent and this write intent didn't
+        // resume a write intent because we haven't yet incremented
+        // the waitingIntent counter back.
         if (waitingIntents.value > 0) {
             while (true) {
-                val s = state.value
-                if (s.wla || s.ww > 0 || s.rwr || s.iwla) break
+                val s = state.value // Read the current state.
+                if (s.wla || s.ww > 0 || s.rwr || s.iwla) break // Check whether the write intent resumption is valid.
+                // Try to set the `RWR` flag again and resume the waiting write intent.
                 if (state.compareAndSet(s, state(s.ar, false, 0, true, s.iwla, s.upgr))) {
                     completeWaitingReadersResumption()
                     return
                 }
             }
         }
-
         // Meanwhile, it could be possible for a writer to come and suspend due to the `RWR` flag.
         // After that, all the following readers suspend since a writer is waiting for the lock.
         // However, if the writer becomes canceled, it cannot resume these suspended readers if the `RWR` flag
