@@ -3,10 +3,9 @@
  */
 @file:Suppress("unused")
 
-import kotlinx.coroutines.*
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.yield
 import org.jetbrains.kotlinx.lincheck.annotations.Operation
 import org.jetbrains.kotlinx.lincheck.annotations.Param
 import org.jetbrains.kotlinx.lincheck.paramgen.ThreadIdGen
@@ -22,16 +21,9 @@ class RWMutexIdeaLincheckTest : AbstractLincheckTest() {
     @Operation(allowExtraSuspension = true)
     suspend fun readLock(@Param(gen = ThreadIdGen::class) threadId: Int) {
         CoroutineScope(Dispatchers.Default).launch {
-            var readPermit: ReadPermit? = null
-            try {
-                readPermit = m.acquireReadPermit(true)
-                readPermits[threadId] += readPermit
-                delay(1_000_000_000L)
-            } finally {
-                readPermit!!.release()
-            }
+            val readPermit = m.acquireReadPermit(true)
+            readPermits[threadId] += readPermit
         }
-        yield()
     }
 
     @Operation
