@@ -130,4 +130,86 @@ class RWMutexIdeaSimplifiedTest : TestBase() {
         writeJob.cancel()
         finish(2)
     }
+
+    @Test
+    fun writersFormAQueue() = runTest {
+        val m = RWMutexIdeaSimplified()
+
+        m.acquireWriteIntentPermit()
+
+        val writeJob1 = launch {
+            expect(1)
+            m.acquireWritePermit()
+            expect(5)
+            m.releaseWritePermit()
+        }
+        yield()
+
+        val writeJob2 = launch {
+            expect(2)
+            m.acquireWritePermit()
+            expect(6)
+            m.releaseWritePermit()
+        }
+        yield()
+
+        val writeJob3 = launch {
+            expect(3)
+            m.acquireWritePermit()
+            expect(7)
+            m.releaseWritePermit()
+        }
+        yield()
+
+        expect(4)
+
+        m.releaseWriteIntentPermit()
+
+        writeJob1.join()
+        writeJob2.join()
+        writeJob3.join()
+
+        finish(8)
+    }
+
+    @Test
+    fun writeIntentsFormAQueue() = runTest {
+        val m = RWMutexIdeaSimplified()
+
+        m.acquireWritePermit()
+
+        val writeIntentJob1 = launch {
+            expect(1)
+            m.acquireWriteIntentPermit()
+            expect(5)
+            m.releaseWriteIntentPermit()
+        }
+        yield()
+
+        val writeIntentJob2 = launch {
+            expect(2)
+            m.acquireWriteIntentPermit()
+            expect(6)
+            m.releaseWriteIntentPermit()
+        }
+        yield()
+
+        val writeIntentJob3 = launch {
+            expect(3)
+            m.acquireWriteIntentPermit()
+            expect(7)
+            m.releaseWriteIntentPermit()
+        }
+        yield()
+
+        expect(4)
+
+        m.releaseWritePermit()
+
+        writeIntentJob1.join()
+        writeIntentJob2.join()
+        writeIntentJob3.join()
+
+        finish(8)
+    }
 }

@@ -14,8 +14,12 @@ interface RWMutexIdea {
     /**
      * Acquires a "read" permit, allowing for concurrent read access.
      * This method may suspend until a permit is available.
+     * If [cancelOnAcquireWritePermit] is set, this method must be called in such a manner
+     * that the [ReadPermit] is released upon the coroutine's cancellation
+     * (i.e. inside a try { ... } finally { ... } block).
      *
      * @param cancelOnAcquireWritePermit indicates whether the current coroutine
+     * is cancelled upon the acquisition of a [WritePermit]
      *
      * @return a [ReadPermit] which can be released after use.
      */
@@ -139,8 +143,8 @@ interface WriteIntentPermit : Permit {
 }
 
 private class ReadPermitImpl(
-        private val mutex: RWMutexIdeaImpl,
-        private val coroutineContextToCancel: CoroutineContext?
+    private val mutex: RWMutexIdeaImpl,
+    private val coroutineContextToCancel: CoroutineContext?
 ) : ReadPermit {
     // false -- "acquired"
     // true  -- "released"
@@ -175,13 +179,13 @@ private class ReadPermitImpl(
 }
 
 object ReadCancellationException : CancellationException(
-        "The running 'read' operation associated with the acquired `ReadPermit` has been cancelled by `RWMutexIdea`"
+    "The running 'read' operation associated with the acquired `ReadPermit` has been cancelled by `RWMutexIdea`"
 ) {
     private fun readResolve(): Any = ReadCancellationException
 }
 
 private class WritePermitImpl(
-        private val mutex: RWMutexIdeaImpl
+    private val mutex: RWMutexIdeaImpl
 ) : WritePermit {
     // false -- "acquired"
     // true  -- "released"
@@ -201,7 +205,7 @@ private class WritePermitImpl(
 }
 
 private class WriteIntentPermitImpl(
-        private val mutex: RWMutexIdeaImpl
+    private val mutex: RWMutexIdeaImpl
 ) : WriteIntentPermit {
 
     // 0 -- "write-intent" permit acquired
